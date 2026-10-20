@@ -1,0 +1,202 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { Icons } from "../icons.slint";
+import { Backend } from "../backend.slint";
+import { Ui } from "../ui_state.slint";
+import { PlaylistCard, StatCard, TrackRow, SectionHeader, M3Button, WrapText } from "../widgets.slint";
+
+export component HomePage inherits Rectangle {
+    property <length> gap: 16px;
+    property <int> cols: Math.max(2, Math.floor((sv.visible-width - 64px + root.gap) / (190px + root.gap)));
+    property <length> card-w: (sv.visible-width - 64px - (root.cols - 1) * root.gap) / root.cols;
+    // Square artwork plus two lines of text.
+    property <length> card-h: root.card-w + 66px;
+
+    sv := ScrollView {
+        content-width: self.visible-width;
+        content-height: content.preferred-height;
+
+        content := VerticalLayout {
+            width: sv.visible-width;
+            padding: 32px;
+            spacing: 24px;
+            alignment: start;
+
+            Text {
+                text: "Welcome back";
+                font-size: 32px;
+                font-weight: 700;
+                color: Theme.on-surface;
+            }
+
+            HorizontalLayout {
+                spacing: 16px;
+                StatCard {
+                    label: "listened this week";
+                    value: Backend.hours-week;
+                    icon: Icons.history;
+                }
+                StatCard {
+                    label: "listened this year";
+                    value: Backend.hours-year;
+                    icon: Icons.equalizer;
+                }
+                StatCard {
+                    label: "listened in total";
+                    value: Backend.hours-total;
+                    icon: Icons.note;
+                }
+                StatCard {
+                    label: "tracks in library";
+                    value: Backend.track-count;
+                    icon: Icons.library;
+                }
+            }
+
+            if Backend.track-count == "0": Rectangle {
+                height: 140px;
+                border-radius: Theme.radius-large;
+                background: Theme.primary-container;
+                HorizontalLayout {
+                    padding: 24px;
+                    spacing: 24px;
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 6px;
+                        Text {
+                            text: "Your library is empty";
+                            font-size: 20px;
+                            font-weight: 700;
+                            color: Theme.on-primary-container;
+                        }
+                        WrapText {
+                            text: "Add a local music folder, connect Nextcloud, or search YouTube to get started.";
+                            color: Theme.on-primary-container;
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        M3Button {
+                            text: "Open settings";
+                            has-icon: true;
+                            icon: Icons.settings;
+                            clicked => { Backend.navigate(4); }
+                        }
+                    }
+                }
+            }
+
+            if Backend.auto-playlists.length > 0: SectionHeader { text: "Made for you"; }
+
+            if Backend.auto-playlists.length > 0: Rectangle {
+                height: Math.ceil(Backend.auto-playlists.length / root.cols) * (root.card-h + root.gap);
+                for p[i] in Backend.auto-playlists: PlaylistCard {
+                    x: Math.mod(i, root.cols) * (root.card-w + root.gap);
+                    y: Math.floor(i / root.cols) * (root.card-h + root.gap);
+                    width: root.card-w;
+                    height: root.card-h;
+                    title: p.name;
+                    subtitle: p.subtitle;
+                    art: p.cover;
+                    has-art: p.has-cover;
+                    auto: true;
+                    clicked => { Backend.open-auto(p.key); }
+                    play => {
+                        Backend.open-auto(p.key);
+                        Backend.play-all("playlist", false);
+                    }
+                }
+            }
+
+            if Backend.playlists.length > 0: SectionHeader { text: "Your playlists"; }
+
+            if Backend.playlists.length > 0: Rectangle {
+                height: Math.ceil(Backend.playlists.length / root.cols) * (root.card-h + root.gap);
+                for p[i] in Backend.playlists: PlaylistCard {
+                    x: Math.mod(i, root.cols) * (root.card-w + root.gap);
+                    y: Math.floor(i / root.cols) * (root.card-h + root.gap);
+                    width: root.card-w;
+                    height: root.card-h;
+                    title: p.name;
+                    subtitle: p.subtitle;
+                    art: p.cover;
+                    has-art: p.has-cover;
+                    clicked => { Backend.open-playlist(p.id); }
+                    play => {
+                        Backend.open-playlist(p.id);
+                        Backend.play-all("playlist", false);
+                    }
+                }
+            }
+
+            if Backend.recent.length > 0: SectionHeader { text: "Recently played"; }
+
+            if Backend.recent.length > 0: VerticalLayout {
+                for t[i] in Backend.recent: TrackRow {
+                    track: t;
+                    index: i;
+                    list: "recent";
+                    play => { Backend.play-from("recent", i); }
+                    menu(x, y) => { Ui.open-menu("recent", i, x, y); }
+                }
+            }
+
+            if Backend.top-artists.length > 0: SectionHeader { text: "Top artists this year"; }
+
+            if Backend.top-artists.length > 0: HorizontalLayout {
+                spacing: 12px;
+                alignment: start;
+                for a[i] in Backend.top-artists: Rectangle {
+                    height: 72px;
+                    horizontal-stretch: 1;
+                    max-width: 260px;
+                    border-radius: Theme.radius-medium;
+                    background: top-ta.has-hover ? Theme.surface-container-highest : Theme.surface-container-high;
+                    top-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { Backend.open-artist(a.name); }
+                    }
+                    HorizontalLayout {
+                        padding: 12px;
+                        spacing: 12px;
+                        Rectangle {
+                            width: 48px;
+                            height: 48px;
+                            Rectangle {
+                                border-radius: 24px;
+                                clip: true;
+                                background: Theme.tertiary-container;
+                                if a.has-image: Image {
+                                    width: parent.width;
+                                    height: parent.height;
+                                    source: a.image;
+                                    image-fit: cover;
+                                }
+                                if !a.has-image: Image {
+                                    width: 24px;
+                                    height: 24px;
+                                    source: Icons.note;
+                                    colorize: Theme.on-tertiary-container;
+                                }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center;
+                            Text {
+                                text: a.name;
+                                overflow: elide;
+                                font-weight: 600;
+                                color: Theme.on-surface;
+                            }
+                            Text {
+                                text: "#\{i + 1} · " + a.hours;
+                                font-size: 12px;
+                                color: Theme.on-surface-variant;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

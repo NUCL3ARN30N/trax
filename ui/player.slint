@@ -1,0 +1,899 @@
+import { ListView, ComboBox, ScrollView } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Icons } from "icons.slint";
+import { Backend } from "backend.slint";
+import { Ui } from "ui_state.slint";
+import { IconButton, M3Slider, Cover, TrackRow, M3Button, M3Switch, M3Spinner, WrapText, Chip } from "widgets.slint";
+
+// Spectrum bars.
+export component Visualizer inherits Rectangle {
+    in property <[float]> values;
+    in property <color> bar-color: Theme.primary;
+    property <length> slot: root.width / Math.max(1, root.values.length);
+    for v[i] in root.values: Rectangle {
+        x: i * root.slot + root.slot * 0.15;
+        width: root.slot * 0.7;
+        height: Math.max(2px, root.height * v);
+        y: root.height - self.height;
+        border-radius: Math.min(self.width / 2, 3px);
+        background: root.bar-color;
+    }
+}
+
+// Fullscreen visualizer in one of several styles.
+export component FsVisualizer inherits Rectangle {
+    in property <int> style;
+    in property <[float]> values;
+    in property <[float]> peaks;
+    in property <string> wave-path;
+    in property <string> circle-path;
+    in property <color> tint: #ffffff;
+    property <length> slot: root.width / Math.max(1, root.values.length);
+    property <length> led-block: (root.height * 0.8) / 16;
+
+    // 0: bars with falling peak caps
+    if root.style == 0: Rectangle {
+        for v[i] in root.values: Rectangle {
+            x: i * root.slot + root.slot * 0.12;
+            width: root.slot * 0.76;
+            height: Math.max(2px, root.height * 0.8 * v);
+            y: root.height - self.height;
+            border-radius: Math.min(self.width / 2, 4px);
+            background: root.tint;
+        }
+        for p[i] in root.peaks: Rectangle {
+            x: i * root.slot + root.slot * 0.12;
+            width: root.slot * 0.76;
+            height: 4px;
+            y: root.height - root.height * 0.8 * p - 10px;
+            border-radius: 2px;
+            background: root.tint;
+        }
+    }
+
+    // 1: mirrored around the centre line
+    if root.style == 1: Rectangle {
+        for v[i] in root.values: Rectangle {
+            x: i * root.slot + root.slot * 0.15;
+            width: root.slot * 0.7;
+            height: Math.max(2px, root.height * 0.9 * v);
+            y: (root.height - self.height) / 2;
+            border-radius: Math.min(self.width / 2, 6px);
+            background: root.tint;
+        }
+    }
+
+    // 2: oscilloscope
+    if root.style == 2: Path {
+        width: root.width;
+        height: root.height;
+        viewbox-width: 1000;
+        viewbox-height: 400;
+        fill: transparent;
+        stroke: root.tint;
+        stroke-width: 3px;
+        commands: root.wave-path;
+    }
+
+    // 3: radial bars
+    if root.style == 3: Path {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        width: Math.min(root.width, root.height);
+        height: self.width;
+        viewbox-width: 1000;
+        viewbox-height: 1000;
+        fill: transparent;
+        stroke: root.tint;
+        stroke-width: 5px;
+        commands: root.circle-path;
+    }
+
+    // 4: LED blocks, green to red
+    if root.style == 4: Rectangle {
+        for v[i] in root.values: Rectangle {
+            x: i * root.slot + root.slot * 0.1;
+            width: root.slot * 0.8;
+            for j in 16: Rectangle {
+                y: root.height - (j + 1) * root.led-block;
+                height: root.led-block * 0.72;
+                visible: j < v * 16;
+                background: j < 9 ? #4caf50 : j < 13 ? #ffc107 : #f44336;
+                opacity: 0.85;
+            }
+        }
+    }
+}
+
+export component TransportControls inherits HorizontalLayout {
+    in property <length> main-size: 48px;
+    in property <color> tint: Theme.on-surface-variant;
+    spacing: 8px;
+    alignment: center;
+    IconButton {
+        y: (root.main-size - self.size) / 2;
+        icon: Icons.shuffle;
+        tint: root.tint;
+        icon-size: 20px;
+        active: Backend.shuffle;
+        // A party guest follows the host's queue.
+        enabled: Backend.party-mode != 2;
+        clicked => { Backend.toggle-shuffle(); }
+    }
+    IconButton {
+        y: (root.main-size - self.size) / 2;
+        icon: Icons.prev;
+        tint: root.tint;
+        enabled: Backend.has-track && Backend.party-mode != 2;
+        clicked => { Backend.previous(); }
+    }
+    Rectangle {
+        width: root.main-size;
+        height: root.main-size;
+        IconButton {
+            size: root.main-size;
+            icon-size: root.main-size * 0.55;
+            filled: true;
+            icon: Backend.playing ? Icons.pause : Icons.play;
+            enabled: Backend.party-mode == 2 ? Backend.party-can-pause && !Backend.party-pause-pending
+                : Backend.has-track || Backend.library-count > 0;
+            clicked => { Backend.play-pause(); }
+        }
+        if Backend.loading || Backend.party-pause-pending: M3Spinner {
+            width: root.main-size + 8px;
+            height: root.main-size + 8px;
+        }
+    }
+    IconButton {
+        y: (root.main-size - self.size) / 2;
+        icon: Icons.next;
+        tint: root.tint;
+        enabled: Backend.party-mode == 2 ? Backend.party-can-skip && !Backend.party-skip-pending : Backend.has-track;
+        clicked => { Backend.next(); }
+    }
+    IconButton {
+        y: (root.main-size - self.size) / 2;
+        icon: Backend.repeat-mode == 2 ? Icons.repeat-one : Icons.repeat;
+        tint: root.tint;
+        icon-size: 20px;
+        active: Backend.repeat-mode > 0;
+        enabled: Backend.party-mode != 2;
+        clicked => { Backend.cycle-repeat(); }
+    }
+}
+
+export component SeekBar inherits HorizontalLayout {
+    in property <color> text-color: Theme.on-surface-variant;
+    spacing: 12px;
+    Text {
+        width: 44px;
+        text: Backend.position-text;
+        horizontal-alignment: right;
+        vertical-alignment: center;
+        font-size: 12px;
+        color: root.text-color;
+    }
+    M3Slider {
+        value: Backend.position;
+        maximum: Math.max(Backend.duration, 1);
+        released(v) => { Backend.seek(v); }
+    }
+    Text {
+        width: 44px;
+        text: Backend.duration-text;
+        vertical-alignment: center;
+        font-size: 12px;
+        color: root.text-color;
+    }
+}
+
+export component VolumeControl inherits HorizontalLayout {
+    in property <color> tint: Theme.on-surface-variant;
+    spacing: 4px;
+    IconButton {
+        icon: Backend.muted || Backend.volume == 0 ? Icons.volume-off : Icons.volume;
+        tint: root.tint;
+        icon-size: 20px;
+        clicked => { Backend.toggle-mute(); }
+    }
+    M3Slider {
+        width: 110px;
+        value: Backend.muted ? 0 : Backend.volume;
+        wheel-step: 0.05;
+        changed(v) => { Backend.set-volume(v); }
+        released(v) => { Backend.set-volume(v); }
+    }
+}
+
+export component PlayerBar inherits Rectangle {
+    height: 92px;
+    background: Theme.surface-container;
+
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        spacing: 16px;
+
+        // Now playing
+        HorizontalLayout {
+            width: 28%;
+            spacing: 12px;
+            Cover {
+                width: 60px;
+                height: 60px;
+                y: 16px;
+                source: Backend.now-cover;
+                has-image: Backend.has-now-cover;
+                TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { if Backend.has-track { Backend.toggle-fullscreen(); } }
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                // As wide as the text, so the star sits right after it.
+                horizontal-stretch: 0;
+                spacing: 2px;
+                Text {
+                    text: Backend.now-title;
+                    font-size: 14px;
+                    font-weight: 600;
+                    overflow: elide;
+                    color: Theme.on-surface;
+                }
+                Text {
+                    text: Backend.now-artist;
+                    font-size: 12px;
+                    overflow: elide;
+                    color: now-artist-ta.has-hover ? Theme.on-surface : Theme.on-surface-variant;
+                    now-artist-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { if Backend.has-track { Backend.open-artist(Backend.now-artist); } }
+                    }
+                }
+            }
+            if Backend.has-track: IconButton {
+                y: 26px;
+                icon: Backend.now-favorite ? Icons.star : Icons.star-outline;
+                icon-size: 20px;
+                tint: Backend.now-favorite ? Theme.primary : Theme.on-surface-variant;
+                clicked => { Backend.toggle-favorite-current(); }
+            }
+            Rectangle { horizontal-stretch: 1; }
+        }
+
+        // Transport
+        VerticalLayout {
+            alignment: center;
+            spacing: 4px;
+            horizontal-stretch: 1;
+            TransportControls { main-size: 44px; }
+            SeekBar { }
+        }
+
+        // Extras
+        HorizontalLayout {
+            width: 28%;
+            alignment: end;
+            spacing: 4px;
+            if Backend.visualizer && Backend.has-track && !Theme.low-end: Visualizer {
+                y: 28px;
+                width: 96px;
+                height: 36px;
+                values: Backend.spectrum;
+            }
+            IconButton {
+                y: 26px;
+                icon: Icons.tune;
+                icon-size: 20px;
+                active: Ui.show-eq;
+                clicked => { Ui.show-eq = !Ui.show-eq; }
+            }
+            IconButton {
+                y: 26px;
+                icon: Icons.queue;
+                icon-size: 20px;
+                active: Ui.show-queue;
+                clicked => { Ui.show-queue = !Ui.show-queue; }
+            }
+            VolumeControl { y: 26px; height: 40px; }
+            IconButton {
+                y: 26px;
+                icon: Icons.fullscreen;
+                icon-size: 20px;
+                enabled: Backend.has-track;
+                clicked => { Backend.toggle-fullscreen(); }
+            }
+        }
+    }
+}
+
+export component QueuePanel inherits Rectangle {
+    property <int> drag-from: -1;
+    property <length> drag-dy: 0;
+    property <int> drop-index: root.drag-from < 0 ? -1
+        : clamp(root.drag-from + Math.round(root.drag-dy / Theme.row-height), 0, Backend.queue.length - 1);
+
+    border-radius: Theme.radius-large;
+    background: Theme.surface-container-low;
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 8px;
+        HorizontalLayout {
+            spacing: 4px;
+            Text {
+                text: "Queue";
+                font-size: 20px;
+                font-weight: 700;
+                vertical-alignment: center;
+                color: Theme.on-surface;
+            }
+            IconButton {
+                icon: Icons.clear-all;
+                icon-size: 20px;
+                enabled: Backend.queue.length > 1;
+                clicked => { Backend.queue-clear(); }
+            }
+            IconButton {
+                icon: Icons.close;
+                icon-size: 20px;
+                clicked => { Ui.show-queue = false; }
+            }
+        }
+        if Backend.queue.length == 0: WrapText {
+            text: "The queue is empty. Play something or use “Add to queue”.";
+            color: Theme.on-surface-variant;
+        }
+        ListView {
+            for t[i] in Backend.queue: TrackRow {
+                track: t;
+                index: i;
+                editable: true;
+                show-album: false;
+                compact: true;
+                opacity: i < Backend.queue-index ? 0.5 : 1;
+                drag-from: root.drag-from;
+                drop-index: root.drop-index;
+                drag-dy: root.drag-dy;
+                list: "queue";
+                play => { Backend.play-from("queue", i); }
+                menu(x, y) => { Ui.open-menu("queue", i, x, y); }
+                remove => { Backend.queue-remove(i); }
+                drag-moved(dy) => {
+                    root.drag-from = i;
+                    root.drag-dy = dy;
+                }
+                drag-ended => {
+                    if root.drag-from >= 0 && root.drop-index != root.drag-from {
+                        Backend.queue-move(root.drag-from, root.drop-index);
+                    }
+                    root.drag-from = -1;
+                    root.drag-dy = 0;
+                }
+            }
+        }
+    }
+}
+
+// One labelled effect slider. `name` is the Rust FxParams field it controls.
+component FxSlider inherits VerticalLayout {
+    in property <string> label;
+    in property <string> name;
+    in property <string> value-text;
+    in property <float> value;
+    in property <float> minimum: 0;
+    in property <float> maximum: 1;
+    spacing: 2px;
+    HorizontalLayout {
+        Text {
+            text: root.label;
+            font-size: 12px;
+            color: Theme.on-surface;
+        }
+        Text {
+            text: root.value-text;
+            horizontal-alignment: right;
+            font-size: 12px;
+            color: Theme.on-surface-variant;
+        }
+    }
+    M3Slider {
+        height: 24px;
+        minimum: root.minimum;
+        maximum: root.maximum;
+        value: root.value;
+        changed(v) => { Backend.fx-set(root.name, v); }
+        released(v) => { Backend.fx-set(root.name, v); }
+    }
+}
+
+component FxToggle inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> name;
+    in property <bool> checked;
+    spacing: 8px;
+    Text {
+        text: root.label;
+        vertical-alignment: center;
+        font-size: 12px;
+        color: Theme.on-surface;
+    }
+    M3Switch {
+        checked: root.checked;
+        toggled(on) => { Backend.fx-set(root.name, on ? 1 : 0); }
+    }
+}
+
+component FxGroup inherits Rectangle {
+    in property <string> title;
+    border-radius: Theme.radius-medium;
+    background: Theme.surface-container;
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+        Text {
+            text: root.title;
+            font-weight: 600;
+            color: Theme.on-surface;
+        }
+        @children
+    }
+}
+
+// Sound panel: equalizer, effects, speed & pitch.
+export component EqPanel inherits Rectangle {
+    property <int> tab: 0;
+    width: 760px;
+    height: 470px;
+    border-radius: Theme.radius-xl;
+    background: Theme.surface-container-high;
+    drop-shadow-blur: Theme.low-end ? 0px : 24px;
+    drop-shadow-color: #00000060;
+
+    TouchArea { }
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 12px;
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: "Sound";
+                font-size: 20px;
+                font-weight: 700;
+                vertical-alignment: center;
+                color: Theme.on-surface;
+            }
+            Rectangle { width: 8px; }
+            Chip {
+                y: 4px;
+                text: "Equalizer";
+                selected: root.tab == 0;
+                clicked => { root.tab = 0; }
+            }
+            Chip {
+                y: 4px;
+                text: "Effects";
+                selected: root.tab == 1;
+                clicked => { root.tab = 1; }
+            }
+            Chip {
+                y: 4px;
+                text: "Speed & pitch";
+                selected: root.tab == 2;
+                clicked => { root.tab = 2; }
+            }
+            Rectangle { }
+            if root.tab == 0: M3Switch {
+                y: 4px;
+                checked: Backend.eq-enabled;
+                toggled(on) => { Backend.eq-toggle(on); }
+            }
+            if root.tab == 0: ComboBox {
+                width: 170px;
+                model: Backend.eq-presets;
+                current-index <=> Backend.eq-preset-index;
+                selected(v) => { Backend.eq-apply-preset(v); }
+            }
+            if root.tab != 0 && !Theme.low-end: M3Button {
+                text: "Reset";
+                kind: 3;
+                clicked => { Backend.fx-reset(); }
+            }
+            IconButton {
+                icon: Icons.close;
+                clicked => { Ui.show-eq = false; }
+            }
+        }
+
+        // Effect presets (also on the speed tab); scrolls sideways on narrow windows.
+        if root.tab != 0 && Theme.low-end: Text {
+            text: "Sound effects are off in low-end mode (Settings → Performance). The equalizer still works.";
+            wrap: word-wrap;
+            color: Theme.primary;
+        }
+        if root.tab != 0 && !Theme.low-end: presets := Flickable {
+            height: 34px;
+            content-width: preset-row.preferred-width;
+            content-height: 34px;
+            preset-row := HorizontalLayout {
+                spacing: 6px;
+                for p in Backend.fx-presets: Chip {
+                    text: p;
+                    clicked => { Backend.fx-preset(p); }
+                }
+            }
+        }
+
+        if root.tab == 0: HorizontalLayout {
+            spacing: 4px;
+            vertical-stretch: 1;
+            opacity: Backend.eq-enabled ? 1 : 0.45;
+            VerticalLayout {
+                width: 36px;
+                Text { text: "+12"; font-size: 11px; color: Theme.on-surface-variant; horizontal-alignment: right; }
+                Rectangle { }
+                Text { text: "0"; font-size: 11px; color: Theme.on-surface-variant; horizontal-alignment: right; }
+                Rectangle { }
+                Text { text: "-12"; font-size: 11px; color: Theme.on-surface-variant; horizontal-alignment: right; }
+                Rectangle { height: 22px; }
+            }
+            for g[i] in Backend.eq-gains: VerticalLayout {
+                spacing: 6px;
+                M3Slider {
+                    vertical: true;
+                    minimum: -12;
+                    maximum: 12;
+                    value: g;
+                    released(v) => {
+                        Backend.eq-set(i, v);
+                        Backend.eq-commit();
+                    }
+                    changed(v) => { Backend.eq-set(i, v); }
+                }
+                Text {
+                    text: Backend.eq-labels[i];
+                    height: 16px;
+                    font-size: 11px;
+                    horizontal-alignment: center;
+                    color: Theme.on-surface-variant;
+                }
+            }
+        }
+
+        if root.tab == 1 && !Theme.low-end: fx-sv := ScrollView {
+            vertical-stretch: 1;
+            content-width: self.visible-width;
+            content-height: fx-cols.preferred-height;
+            fx-cols := HorizontalLayout {
+            width: fx-sv.visible-width - 12px;
+            spacing: 10px;
+            VerticalLayout {
+                spacing: 10px;
+                alignment: start;
+                FxGroup {
+                    title: "Reverb";
+                    FxSlider {
+                        label: "Mix";
+                        name: "reverb_mix";
+                        value: Backend.fx-reverb-mix;
+                        value-text: Math.round(Backend.fx-reverb-mix * 100) + " %";
+                    }
+                    FxSlider {
+                        label: "Room size";
+                        name: "reverb_size";
+                        value: Backend.fx-reverb-size;
+                        value-text: Math.round(Backend.fx-reverb-size * 100) + " %";
+                    }
+                    FxSlider {
+                        label: "Damping";
+                        name: "reverb_damp";
+                        value: Backend.fx-reverb-damp;
+                        value-text: Math.round(Backend.fx-reverb-damp * 100) + " %";
+                    }
+                }
+                FxGroup {
+                    title: "Echo";
+                    FxSlider {
+                        label: "Mix";
+                        name: "echo_mix";
+                        value: Backend.fx-echo-mix;
+                        value-text: Math.round(Backend.fx-echo-mix * 100) + " %";
+                    }
+                    FxSlider {
+                        label: "Delay";
+                        name: "echo_ms";
+                        minimum: 50;
+                        maximum: 1000;
+                        value: Backend.fx-echo-ms;
+                        value-text: Math.round(Backend.fx-echo-ms) + " ms";
+                    }
+                    FxSlider {
+                        label: "Feedback";
+                        name: "echo_feedback";
+                        maximum: 0.9;
+                        value: Backend.fx-echo-feedback;
+                        value-text: Math.round(Backend.fx-echo-feedback * 100) + " %";
+                    }
+                }
+            }
+            VerticalLayout {
+                spacing: 10px;
+                alignment: start;
+                FxGroup {
+                    title: "Sidechain pump";
+                    FxSlider {
+                        label: "Depth";
+                        name: "pump_depth";
+                        value: Backend.fx-pump-depth;
+                        value-text: Math.round(Backend.fx-pump-depth * 100) + " %";
+                    }
+                    FxSlider {
+                        label: "Tempo";
+                        name: "pump_bpm";
+                        minimum: 60;
+                        maximum: 180;
+                        value: Backend.fx-pump-bpm;
+                        value-text: Math.round(Backend.fx-pump-bpm) + " BPM";
+                    }
+                }
+                FxGroup {
+                    title: "Space";
+                    FxSlider {
+                        label: "8D rotation";
+                        name: "rotate";
+                        maximum: 0.5;
+                        value: Backend.fx-rotate;
+                        value-text: Backend.fx-rotate < 0.005 ? "off" : (Math.round(Backend.fx-rotate * 100) / 100) + " Hz";
+                    }
+                    FxSlider {
+                        label: "Stereo width";
+                        name: "width";
+                        maximum: 2;
+                        value: Backend.fx-width;
+                        value-text: Math.round(Backend.fx-width * 100) + " %";
+                    }
+                    FxSlider {
+                        label: "Balance";
+                        name: "balance";
+                        minimum: -1;
+                        maximum: 1;
+                        value: Backend.fx-balance;
+                        value-text: Math.abs(Backend.fx-balance) < 0.02 ? "centre" : Backend.fx-balance < 0 ? "L " + Math.round(-Backend.fx-balance * 100) : "R " + Math.round(Backend.fx-balance * 100);
+                    }
+                }
+            }
+            VerticalLayout {
+                spacing: 10px;
+                alignment: start;
+                FxGroup {
+                    title: "Filters";
+                    FxSlider {
+                        label: "Low-pass";
+                        name: "lowpass";
+                        minimum: 500;
+                        maximum: 20000;
+                        value: Backend.fx-lowpass;
+                        value-text: Backend.fx-lowpass >= 19000 ? "off" : Math.round(Backend.fx-lowpass) + " Hz";
+                    }
+                    FxSlider {
+                        label: "High-pass";
+                        name: "highpass";
+                        minimum: 20;
+                        maximum: 1000;
+                        value: Backend.fx-highpass;
+                        value-text: Backend.fx-highpass <= 25 ? "off" : Math.round(Backend.fx-highpass) + " Hz";
+                    }
+                }
+                FxGroup {
+                    title: "Tools";
+                    FxToggle {
+                        label: "Vocal remover (karaoke)";
+                        name: "karaoke";
+                        checked: Backend.fx-karaoke;
+                    }
+                    FxToggle {
+                        label: "Limiter (no clipping)";
+                        name: "limiter";
+                        checked: Backend.fx-limiter;
+                    }
+                }
+            }
+        }
+        }
+
+        if root.tab == 2 && !Theme.low-end: VerticalLayout {
+            spacing: 16px;
+            alignment: start;
+            vertical-stretch: 1;
+            FxGroup {
+                title: "Speed (pitch stays the same)";
+                FxSlider {
+                    label: "Tempo";
+                    name: "tempo";
+                    minimum: 0.5;
+                    maximum: 2;
+                    value: Backend.fx-tempo;
+                    value-text: (Math.round(Backend.fx-tempo * 100) / 100) + "×";
+                }
+            }
+            FxGroup {
+                title: "Pitch (speed stays the same)";
+                FxSlider {
+                    label: "Transpose";
+                    name: "pitch";
+                    minimum: -12;
+                    maximum: 12;
+                    value: Backend.fx-pitch;
+                    value-text: (Backend.fx-pitch > 0.05 ? "+" : "") + (Math.round(Backend.fx-pitch * 10) / 10) + " semitones";
+                }
+            }
+            Text {
+                text: "Tip: \"Nightcore\" raises tempo and pitch together, \"Slowed + reverb\" does the opposite.";
+                font-size: 12px;
+                color: Theme.on-surface-variant;
+            }
+        }
+    }
+}
+
+export component FullscreenView inherits Rectangle {
+    background: #000000;
+
+    // Background: artwork, the visualizer only, or both (Settings → Playback).
+    // Low-end mode falls back to the artwork.
+    property <bool> show-art: (Backend.fs-background != 1 || Theme.low-end) && Backend.has-fullscreen-art;
+    property <bool> show-vis: Backend.fs-background != 0 && !Theme.low-end;
+
+    if root.show-art: Image {
+        width: root.width;
+        height: root.height;
+        source: Backend.fullscreen-art;
+        image-fit: cover;
+        opacity: 0.85;
+    }
+    // Visualizer only: a dark backdrop tinted with the accent colour.
+    if !root.show-art: Rectangle {
+        background: @radial-gradient(circle, Theme.primary-container.darker(0.4) 0%, #000000 75%);
+    }
+    if root.show-vis: FsVisualizer {
+        x: 0;
+        y: root.show-art ? root.height * 0.25 : root.height * 0.08;
+        width: root.width;
+        height: root.show-art ? root.height * 0.5 : root.height * 0.62;
+        style: Backend.visual-style;
+        values: Backend.spectrum;
+        peaks: Backend.spectrum-peaks;
+        wave-path: Backend.wave-path;
+        circle-path: Backend.circle-path;
+        tint: root.show-art ? #ffffff38 : Theme.primary.with-alpha(0.75);
+    }
+    Rectangle {
+        background: @linear-gradient(180deg, #00000066 0%, #00000000 30%, #000000aa 65%, #000000f0 100%);
+    }
+
+    fs := FocusScope {
+        key-pressed(e) => {
+            if e.text == Key.Escape {
+                Backend.toggle-fullscreen();
+                return accept;
+            }
+            if e.text == " " {
+                Backend.play-pause();
+                return accept;
+            }
+            if e.text == Key.RightArrow {
+                Backend.next();
+                return accept;
+            }
+            if e.text == Key.LeftArrow {
+                Backend.previous();
+                return accept;
+            }
+            return reject;
+        }
+        init => { self.focus(); }
+    }
+
+    HorizontalLayout {
+        x: root.width - self.preferred-width - 24px;
+        y: 24px;
+        width: self.preferred-width;
+        height: 48px;
+        spacing: 8px;
+        IconButton {
+            icon: Icons.image;
+            tint: #ffffff;
+            tonal: false;
+            clicked => { Backend.pick-artist-art(); }
+        }
+        if Backend.spotify-enabled: IconButton {
+            icon: Icons.download;
+            tint: #ffffff;
+            clicked => { Backend.fetch-artist-art(); }
+        }
+        IconButton {
+            icon: Icons.refresh;
+            tint: #ffffff;
+            clicked => { Backend.clear-artist-art(); }
+        }
+        IconButton {
+            icon: Icons.fullscreen-exit;
+            tint: #ffffff;
+            clicked => { Backend.toggle-fullscreen(); }
+        }
+    }
+
+    VerticalLayout {
+        padding: 56px;
+        padding-bottom: 40px;
+        spacing: 24px;
+        alignment: end;
+
+        HorizontalLayout {
+            spacing: 32px;
+            alignment: start;
+            Cover {
+                width: Math.min(260px, root.height * 0.3);
+                height: self.width;
+                border-radius: Theme.radius-medium;
+                drop-shadow-blur: Theme.low-end ? 0px : 32px;
+                drop-shadow-color: #000000a0;
+                source: Backend.now-cover;
+                has-image: Backend.has-now-cover;
+            }
+            VerticalLayout {
+                alignment: end;
+                spacing: 8px;
+                Text {
+                    text: Backend.now-title;
+                    font-size: 56px;
+                    font-weight: 800;
+                    overflow: elide;
+                    color: #ffffff;
+                }
+                Text {
+                    text: Backend.now-artist;
+                    font-size: 26px;
+                    font-weight: 500;
+                    overflow: elide;
+                    color: fs-artist-ta.has-hover ? #ffffff : #ffffffcc;
+                    fs-artist-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            Backend.toggle-fullscreen();
+                            Backend.open-artist(Backend.now-artist);
+                        }
+                    }
+                }
+                Text {
+                    text: Backend.now-album;
+                    font-size: 18px;
+                    overflow: elide;
+                    color: #ffffff99;
+                }
+            }
+        }
+
+        SeekBar { text-color: #ffffffcc; }
+
+        HorizontalLayout {
+            alignment: space-between;
+            Rectangle { width: 180px; }
+            TransportControls {
+                main-size: 64px;
+                tint: #ffffff;
+            }
+            HorizontalLayout {
+                width: 180px;
+                alignment: end;
+                VolumeControl {
+                    y: 12px;
+                    height: 40px;
+                    tint: #ffffff;
+                }
+            }
+        }
+    }
+}

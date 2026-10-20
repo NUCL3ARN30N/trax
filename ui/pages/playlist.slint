@@ -1,0 +1,164 @@
+import { ListView } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { Icons } from "../icons.slint";
+import { Backend } from "../backend.slint";
+import { Ui } from "../ui_state.slint";
+import { TrackRow, M3Button, IconButton, LogoArt } from "../widgets.slint";
+
+// Playlist view and on-screen editor (drag to reorder, remove, edit details, delete).
+export component PlaylistPage inherits Rectangle {
+    property <int> drag-from: -1;
+    property <length> drag-dy: 0;
+    property <int> drop-index: root.drag-from < 0 ? -1
+        : clamp(root.drag-from + Math.round(root.drag-dy / Theme.row-height), 0, Backend.playlist-tracks.length - 1);
+
+    VerticalLayout {
+        padding: 32px;
+        padding-bottom: 0;
+        spacing: 20px;
+
+        HorizontalLayout {
+            spacing: 24px;
+            height: 180px;
+
+            Rectangle {
+                width: 180px;
+                border-radius: Theme.radius-large;
+                clip: true;
+                drop-shadow-blur: Theme.low-end ? 0px : 16px;
+                drop-shadow-color: #00000040;
+                if Backend.playlist-has-cover: Image {
+                    width: parent.width;
+                    height: parent.height;
+                    image-fit: cover;
+                    source: Backend.playlist-cover;
+                }
+                if !Backend.playlist-has-cover: LogoArt {
+                    width: parent.width;
+                    height: parent.height;
+                    with-name: !Backend.playlist-editable;
+                }
+                if Backend.playlist-editable: TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        Backend.edit-playlist-begin();
+                        Ui.dialog = 6;
+                    }
+                }
+            }
+
+            VerticalLayout {
+                alignment: end;
+                spacing: 6px;
+                Text {
+                    text: Backend.playlist-editable ? "PLAYLIST" : "MADE FOR YOU";
+                    font-size: 12px;
+                    font-weight: 700;
+                    letter-spacing: 1px;
+                    color: Theme.on-surface-variant;
+                }
+                Text {
+                    text: Backend.playlist-name;
+                    font-size: 40px;
+                    font-weight: 800;
+                    overflow: elide;
+                    color: Theme.on-surface;
+                }
+                if Backend.playlist-description != "": Text {
+                    text: Backend.playlist-description;
+                    wrap: word-wrap;
+                    max-height: 40px;
+                    overflow: elide;
+                    color: Theme.on-surface-variant;
+                }
+                Text {
+                    text: Backend.playlist-subtitle;
+                    font-size: 12px;
+                    color: Theme.on-surface-variant;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    padding-top: 8px;
+                    M3Button {
+                        text: "Play";
+                        has-icon: true;
+                        icon: Icons.play;
+                        enabled: Backend.playlist-tracks.length > 0;
+                        clicked => { Backend.play-all("playlist", false); }
+                    }
+                    M3Button {
+                        text: "Shuffle";
+                        kind: 1;
+                        has-icon: true;
+                        icon: Icons.shuffle;
+                        enabled: Backend.playlist-tracks.length > 0;
+                        clicked => { Backend.play-all("playlist", true); }
+                    }
+                    if Backend.playlist-editable: IconButton {
+                        icon: Icons.edit;
+                        tooltip: "Edit details";
+                        clicked => {
+                            Backend.edit-playlist-begin();
+                            Ui.dialog = 6;
+                        }
+                    }
+                    if Backend.playlist-editable: IconButton {
+                        icon: Icons.upload;
+                        tooltip: "Share as code";
+                        clicked => {
+                            Backend.share-playlist();
+                            Ui.dialog = 9;
+                        }
+                    }
+                    if Backend.playlist-editable && !Backend.playlist-favorites: IconButton {
+                        icon: Icons.delete;
+                        tooltip: "Delete";
+                        clicked => { Ui.dialog = 4; }
+                    }
+                    if !Backend.playlist-editable: M3Button {
+                        text: "Save as playlist";
+                        kind: 2;
+                        has-icon: true;
+                        icon: Icons.playlist-add;
+                        enabled: Backend.playlist-tracks.length > 0;
+                        clicked => { Backend.save-auto-as-playlist(); }
+                    }
+                }
+            }
+        }
+
+        if Backend.playlist-tracks.length == 0: Text {
+            text: Backend.playlist-editable
+                ? "This playlist is empty. Use the ⋮ menu on any track to add it here."
+                : "Nothing here yet — keep listening and this list fills itself.";
+            color: Theme.on-surface-variant;
+        }
+
+        ListView {
+            for t[i] in Backend.playlist-tracks: TrackRow {
+                track: t;
+                index: i;
+                editable: Backend.playlist-editable;
+                drag-from: root.drag-from;
+                drop-index: root.drop-index;
+                drag-dy: root.drag-dy;
+                list: "playlist";
+                play => { Backend.play-from("playlist", i); }
+                menu(x, y) => { Ui.open-menu("playlist", i, x, y); }
+                remove => { Backend.playlist-remove(i); }
+                drag-moved(dy) => {
+                    root.drag-from = i;
+                    root.drag-dy = dy;
+                }
+                drag-ended => {
+                    if root.drag-from >= 0 && root.drop-index != root.drag-from {
+                        Backend.playlist-move(root.drag-from, root.drop-index);
+                    }
+                    root.drag-from = -1;
+                    root.drag-dy = 0;
+                }
+            }
+        }
+    }
+}

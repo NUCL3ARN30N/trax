@@ -1,0 +1,487 @@
+// Data and callbacks shared between the Rust core and the UI.
+
+export struct TrackItem {
+    id: int,
+    title: string,
+    artist: string,
+    album: string,
+    duration: string,
+    source: string,
+    cover: image,
+    has-cover: bool,
+    playing: bool,
+    favorite: bool,
+}
+
+export struct PlaylistItem {
+    id: int,
+    key: string,
+    name: string,
+    subtitle: string,
+    count: int,
+    cover: image,
+    has-cover: bool,
+    favorites: bool,
+}
+
+export struct ArtistItem {
+    name: string,
+    image: image,
+    has-image: bool,
+    subtitle: string,
+}
+
+export struct AlbumItem {
+    name: string,
+    cover: image,
+    has-cover: bool,
+    subtitle: string,
+}
+
+export struct MatchItem {
+    title: string,
+    subtitle: string,
+    image: image,
+    has-image: bool,
+}
+
+export struct AccentItem {
+    hex: string,
+    color: color,
+}
+
+// Someone in a listening party (the flags are what they may control).
+export struct PartyPeer {
+    id: string,
+    name: string,
+    host: bool,
+    me: bool,
+    online: bool,
+    skip: bool,
+    seek: bool,
+    pause: bool,
+    add: bool,
+    remove: bool,
+    // "Can skip · pause" / "Listening".
+    caps-text: string,
+}
+
+// A song in the party queue.
+export struct PartyEntry {
+    id: string,
+    title: string,
+    artist: string,
+    added-by: string,
+    mine: bool,
+    // Waiting for the host (own request).
+    pending: bool,
+    // false for songs only the host can hear.
+    playable: bool,
+}
+
+export struct ArtistStat {
+    name: string,
+    hours: string,
+    image: image,
+    has-image: bool,
+}
+
+export global Backend {
+    // ---- navigation: 0 home, 1 search, 2 library, 3 playlist, 4 settings, 5 artist
+    in-out property <int> page: 0;
+    in property <bool> can-go-back: false;
+    in property <bool> can-go-forward: false;
+    // Window narrower than 1100 logical px: collapse the sidebar to an icon rail. Set from Rust
+    // (a binding on the window width would loop through the sidebar's minimum width).
+    in property <bool> narrow-nav: false;
+    in-out property <bool> fullscreen: false;
+
+    // ---- now playing
+    in property <bool> has-track: false;
+    in property <string> now-title: "Nothing playing";
+    in property <string> now-artist;
+    in property <string> now-album;
+    in property <string> now-source;
+    in property <image> now-cover;
+    in property <bool> has-now-cover: false;
+    in property <image> fullscreen-art;
+    in property <bool> has-fullscreen-art: false;
+    in property <bool> playing: false;
+    in property <bool> loading: false;
+    in property <float> position: 0;
+    in property <float> duration: 0;
+    in property <string> position-text: "0:00";
+    in property <string> duration-text: "0:00";
+    in property <float> volume: 0.7;
+    in property <bool> muted: false;
+    in property <bool> shuffle: false;
+    in property <int> repeat-mode: 0;
+
+    // ---- track lists
+    in property <[TrackItem]> library;
+    in property <[TrackItem]> recent;
+    in property <[TrackItem]> search-local;
+    in property <[TrackItem]> search-yt;
+    in property <[TrackItem]> search-sc;
+    in property <[TrackItem]> playlist-tracks;
+    in property <[TrackItem]> queue;
+    in property <int> queue-index: -1;
+    in property <[PlaylistItem]> playlists;
+    in property <[PlaylistItem]> auto-playlists;
+
+    // ---- library view
+    in-out property <string> library-filter;
+    in-out property <int> library-sort: 0;
+    in-out property <int> library-source: 0;
+    in property <int> library-count: 0;
+    // 0 tracks, 1 artists
+    in-out property <int> library-view: 0;
+    in property <[ArtistItem]> artists;
+
+    // ---- artist profile (page 5)
+    in property <string> artist-name;
+    in property <image> artist-image;
+    in property <bool> artist-has-image: false;
+    in property <string> artist-genres;
+    in property <string> artist-followers;
+    in property <string> artist-stats;
+    in property <string> artist-bio;
+    in property <string> artist-bio-url;
+    in property <string> artist-url;
+    in property <bool> artist-matched: false;
+    in property <bool> artist-loading: false;
+    in property <[TrackItem]> artist-tracks;
+    in property <[AlbumItem]> artist-albums;
+    in-out property <string> artist-bio-edit;
+
+    // ---- "find on Spotify" dialog: 0 artist match, 1 track artwork
+    in property <int> match-kind: 0;
+    in-out property <string> match-query;
+    in property <[MatchItem]> match-results;
+    in property <bool> match-searching: false;
+    in property <string> match-error;
+
+    // ---- search
+    in-out property <string> search-query;
+    // Where to search: 0 everywhere, 1 library only, 2 YouTube only, 3 SoundCloud only.
+    in-out property <int> search-scope: 0;
+    in property <bool> yt-searching: false;
+    in property <bool> sc-searching: false;
+    in property <string> search-error;
+
+    // ---- playlist view
+    in property <int> playlist-id: 0;
+    in property <string> playlist-key;
+    in property <string> playlist-name;
+    in property <string> playlist-subtitle;
+    in property <bool> playlist-editable: false;
+    in property <bool> playlist-favorites: false;
+    in property <string> playlist-description;
+    in property <image> playlist-cover;
+    in property <bool> playlist-has-cover: false;
+
+    // ---- edit dialogs (track info / playlist details)
+    in-out property <string> edit-title;
+    in-out property <string> edit-artist;
+    in-out property <string> edit-album;
+    in-out property <string> edit-description;
+    in property <image> edit-cover;
+    in property <bool> edit-has-cover: false;
+
+    // ---- statistics
+    in property <string> hours-week: "0 min";
+    in property <string> hours-year: "0 min";
+    in property <string> hours-total: "0 min";
+    in property <string> plays-week: "0";
+    in property <string> track-count: "0";
+    in property <[ArtistStat]> top-artists;
+
+    // ---- equalizer
+    in property <bool> eq-enabled: false;
+    in property <[float]> eq-gains: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    in property <[string]> eq-labels: ["31", "62", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"];
+    in property <[string]> eq-presets: ["Flat"];
+    in-out property <int> eq-preset-index: 0;
+
+    // ---- settings
+    in property <int> theme-mode: 0;
+    in property <bool> close-to-tray: true;
+    in property <bool> auto-playlists-enabled: true;
+    in property <bool> preload-enabled: true;
+    in property <bool> crossfade-enabled: false;
+    in property <float> crossfade-secs: 2;
+    in property <bool> local-enabled: true;
+    in property <bool> nc-enabled: false;
+    in property <bool> yt-enabled: false;
+    in property <bool> sc-enabled: false;
+    in property <bool> spotify-enabled: false;
+    in property <bool> spotify-auto: true;
+    in property <[string]> local-folders;
+    in-out property <string> nc-url;
+    in-out property <string> nc-user;
+    in-out property <string> nc-password;
+    in-out property <string> nc-folder: "Music";
+    in-out property <string> ytdlp-path;
+    in property <string> ytdlp-status: "not checked";
+    in-out property <string> sp-client-id;
+    in-out property <string> sp-client-secret;
+    in property <bool> scanning: false;
+    in property <string> scan-status;
+    in property <string> data-dir;
+    in property <string> version;
+
+    // ---- snackbar
+    in property <string> toast;
+
+    // ---- callbacks
+    callback navigate(int);
+    callback go-back();
+    callback go-forward();
+    callback play-pause();
+    callback next();
+    callback previous();
+    callback seek(float);
+    callback set-volume(float);
+    callback toggle-mute();
+    callback toggle-shuffle();
+    callback cycle-repeat();
+
+    // list ids: "library", "recent", "search-local", "search-yt", "search-sc", "playlist", "queue"
+    callback play-from(string, int);
+    callback queue-add(string, int);
+    callback queue-play-next(string, int);
+    callback add-to-playlist(string, int, int);
+    callback new-playlist-with(string, int, string);
+    callback play-all(string, bool);
+
+    callback queue-remove(int);
+    callback queue-move(int, int);
+    callback queue-clear();
+    callback playlist-remove(int);
+    callback playlist-move(int, int);
+    callback open-playlist(int);
+    callback open-auto(string);
+    callback create-playlist(string);
+    callback delete-playlist();
+    callback save-auto-as-playlist();
+
+    callback search(string);
+    callback library-changed();
+
+    callback eq-set(int, float);
+    callback eq-commit();
+    callback eq-toggle(bool);
+    callback eq-apply-preset(string);
+
+    callback set-theme(int);
+    callback set-close-to-tray(bool);
+    callback set-auto-playlists(bool);
+    callback set-preload(bool);
+    callback set-crossfade(bool);
+    callback set-crossfade-secs(float);
+    callback edit-track-begin(string, int);
+    callback edit-track-save();
+    callback edit-playlist-begin();
+    callback edit-playlist-save();
+    callback edit-pick-cover();
+    callback edit-clear-cover();
+    callback set-connector(string, bool);
+    callback add-local-folder();
+    callback remove-local-folder(int);
+    callback rescan-local();
+    callback save-nextcloud();
+    callback test-nextcloud();
+    callback scan-nextcloud();
+    callback save-ytdlp();
+    callback open-ytdlp-folder();
+    in property <string> ytdlp-folder;
+    callback save-spotify();
+    callback fetch-artist-art();
+    callback pick-artist-art();
+    callback clear-artist-art();
+    callback export-data();
+    callback import-data();
+    callback remap-paths(string, string);
+    callback open-data-dir();
+    callback clear-cache();
+    callback toggle-fullscreen();
+
+    // ---- favourites
+    in property <bool> now-favorite: false;
+    callback toggle-favorite(string, int);
+    callback toggle-favorite-current();
+
+    // ---- sound: effects (names match the Rust FxParams fields)
+    in property <float> fx-tempo: 1;
+    in property <float> fx-pitch: 0;
+    in property <float> fx-reverb-mix: 0;
+    in property <float> fx-reverb-size: 0.6;
+    in property <float> fx-reverb-damp: 0.4;
+    in property <float> fx-echo-mix: 0;
+    in property <float> fx-echo-ms: 350;
+    in property <float> fx-echo-feedback: 0.35;
+    in property <float> fx-pump-depth: 0;
+    in property <float> fx-pump-bpm: 120;
+    in property <float> fx-width: 1;
+    in property <float> fx-balance: 0;
+    in property <float> fx-lowpass: 20000;
+    in property <float> fx-highpass: 20;
+    in property <float> fx-rotate: 0;
+    in property <bool> fx-karaoke: false;
+    in property <bool> fx-limiter: false;
+    in property <[string]> fx-presets;
+    callback fx-set(string, float);
+    callback fx-preset(string);
+    callback fx-reset();
+
+    // ---- crossfade & sections
+    in property <int> crossfade-curve: 1;
+    in property <bool> crossfade-on-skip: false;
+    in property <bool> pause-fade: true;
+    in property <bool> resume-enabled: true;
+    in property <bool> low-end: false;
+    callback set-low-end(bool);
+    callback set-resume(bool);
+    in property <bool> sections-enabled: true;
+    in-out property <string> edit-start;
+    in-out property <string> edit-end;
+    in property <bool> edit-is-current: false;
+    callback set-crossfade-curve(int);
+    callback set-crossfade-on-skip(bool);
+    callback set-pause-fade(bool);
+    callback set-sections-enabled(bool);
+    callback edit-section-from-position(bool);
+
+    // ---- visualizer
+    in property <bool> visualizer: false;
+    in property <[float]> spectrum;
+    in property <[float]> spectrum-peaks;
+    // Oscilloscope and circle styles: SVG path commands built in Rust.
+    in property <string> wave-path;
+    in property <string> circle-path;
+    // Fullscreen background: 0 artwork, 1 visualizer only, 2 artwork + visualizer.
+    in property <int> fs-background: 0;
+    // Fullscreen style: 0 bars, 1 mirror, 2 wave, 3 circle, 4 LED.
+    in property <int> visual-style: 0;
+    callback set-fs-background(int);
+    callback set-visual-style(int);
+    callback set-visualizer(bool);
+
+    // ---- audio cache
+    in property <int> cache-limit-mb: 4096;
+    in property <string> cache-usage;
+    callback set-cache-limit(int);
+
+    // ---- appearance
+    in property <string> accent: "#6750a4";
+    in property <[AccentItem]> accent-presets;
+    in property <int> corner-style: 2;
+    in property <int> density: 1;
+    in property <int> ui-scale: 100;
+    in property <bool> ui-scale-pending: false;
+    in property <bool> sidebar-always-compact: false;
+    in-out property <string> font-family;
+    in property <[string]> themes;
+    in property <string> active-theme: "Default";
+    callback set-accent(string);
+    callback set-corner-style(int);
+    callback set-density(int);
+    callback set-ui-scale(int);
+    callback set-font-family();
+    callback set-ui-flag(string, bool);
+    callback theme-select(string);
+    callback theme-import();
+    callback theme-export();
+    callback theme-delete();
+    callback reset-design();
+
+    // ---- listening party
+    // 0 none, 1 host, 2 guest
+    in property <int> party-mode: 0;
+    // "connecting", "live", "reconnecting"
+    in property <string> party-phase;
+    in property <string> party-status;
+    in-out property <string> party-error;
+    in property <string> party-code;
+    in property <bool> party-has-password;
+    in property <[PartyPeer]> party-peers;
+    in property <[PartyEntry]> party-queue;
+    in property <string> party-now-title;
+    in property <string> party-now-artist;
+    // Guest: why the current song can't be heard here.
+    in property <string> party-unavailable;
+    // Host: e.g. a local song is playing.
+    in property <string> party-notice;
+    in property <bool> party-can-skip;
+    in property <bool> party-can-seek;
+    in property <bool> party-can-pause;
+    in property <bool> party-can-add;
+    in property <bool> party-can-remove;
+    in property <bool> party-skip-pending;
+    in property <bool> party-pause-pending;
+    in property <bool> party-seek-pending;
+    in-out property <string> party-name;
+    in-out property <string> party-turn-url;
+    in-out property <string> party-turn-user;
+    in-out property <string> party-turn-pass;
+    in-out property <string> party-relays;
+    callback party-create(string);
+    callback party-join(string, string);
+    callback party-leave();
+    callback party-copy-code();
+    callback party-set-cap(string, string, bool);
+    callback party-grant-all(string, bool);
+    callback party-kick(string);
+    callback party-save-settings();
+    callback party-remove-entry(string);
+
+    // ---- playlist share codes
+    in property <string> share-code;
+    in property <string> share-info;
+    in-out property <string> share-error;
+    callback share-playlist();
+    callback copy-share-code();
+    // True when the playlist was imported (the dialog closes).
+    callback import-playlist(string) -> bool;
+
+    // "LICENSE" or "THIRD_PARTY_LICENSES.txt"
+    callback open-legal(string);
+
+    // ---- default music player
+    in property <bool> player-registered: false;
+    in property <string> player-default-status;
+    callback make-default-player();
+    callback unregister-player();
+    callback refresh-default-status();
+
+    // ---- updates (GitHub releases)
+    in property <string> install-kind: "Portable";
+    in property <bool> update-auto: true;
+    in property <bool> update-busy: false;
+    in property <bool> update-available: false;
+    in property <string> update-version;
+    in property <string> update-notes;
+    in property <string> update-status;
+    in property <float> update-progress: 0;
+    in-out property <bool> update-banner: false;
+    callback set-update-auto(bool);
+    callback check-updates();
+    callback install-update();
+    callback open-release-page();
+
+    callback open-artist(string);
+    callback artist-refresh();
+    callback artist-pick-image();
+    callback artist-clear-image();
+    callback artist-edit-begin();
+    callback artist-edit-save();
+    callback play-album(int);
+    callback open-url(string);
+    callback match-begin-artist();
+    callback match-begin-track();
+    callback match-search();
+    callback match-pick(int);
+    callback set-spotify-auto(bool);
+    callback fill-missing-artwork();
+    callback update-all-artists();
+}

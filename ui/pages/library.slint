@@ -1,0 +1,139 @@
+import { ListView, LineEdit, ComboBox, ScrollView } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { Icons } from "../icons.slint";
+import { Backend } from "../backend.slint";
+import { Ui } from "../ui_state.slint";
+import { TrackRow, Chip, M3Button, ArtistCard } from "../widgets.slint";
+
+export component LibraryPage inherits Rectangle {
+    VerticalLayout {
+        padding: 32px;
+        padding-bottom: 0;
+        spacing: 16px;
+
+        HorizontalLayout {
+            spacing: 16px;
+            VerticalLayout {
+                alignment: center;
+                Text {
+                    text: "Library";
+                    font-size: 32px;
+                    font-weight: 700;
+                    color: Theme.on-surface;
+                }
+                Text {
+                    text: "\{Backend.library-count} tracks";
+                    color: Theme.on-surface-variant;
+                }
+            }
+            Rectangle { }
+            VerticalLayout {
+                alignment: center;
+                M3Button {
+                    text: "Play";
+                    has-icon: true;
+                    icon: Icons.play;
+                    enabled: Backend.library-count > 0;
+                    clicked => { Backend.play-all("library", false); }
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                M3Button {
+                    text: "Shuffle";
+                    kind: 1;
+                    has-icon: true;
+                    icon: Icons.shuffle;
+                    enabled: Backend.library-count > 0;
+                    clicked => { Backend.play-all("library", true); }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            LineEdit {
+                horizontal-stretch: 1;
+                placeholder-text: "Filter by title, artist or album";
+                text <=> Backend.library-filter;
+                edited => { Backend.library-changed(); }
+            }
+            ComboBox {
+                width: 180px;
+                model: ["Title", "Artist", "Album", "Recently added", "Most played"];
+                current-index <=> Backend.library-sort;
+                selected => { Backend.library-changed(); }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+            Chip {
+                text: "Tracks";
+                selected: Backend.library-view == 0;
+                clicked => { Backend.library-view = 0; Backend.library-changed(); }
+            }
+            Chip {
+                text: "Artists";
+                selected: Backend.library-view == 1;
+                clicked => { Backend.library-view = 1; Backend.library-changed(); }
+            }
+            Rectangle { width: 16px; }
+            Chip {
+                text: "All sources";
+                selected: Backend.library-source == 0;
+                clicked => { Backend.library-source = 0; Backend.library-changed(); }
+            }
+            if Backend.local-enabled: Chip {
+                text: "Local";
+                selected: Backend.library-source == 1;
+                clicked => { Backend.library-source = 1; Backend.library-changed(); }
+            }
+            if Backend.nc-enabled: Chip {
+                text: "Nextcloud";
+                selected: Backend.library-source == 2;
+                clicked => { Backend.library-source = 2; Backend.library-changed(); }
+            }
+            if Backend.yt-enabled: Chip {
+                text: "YouTube";
+                selected: Backend.library-source == 3;
+                clicked => { Backend.library-source = 3; Backend.library-changed(); }
+            }
+            if Backend.sc-enabled: Chip {
+                text: "SoundCloud";
+                selected: Backend.library-source == 4;
+                clicked => { Backend.library-source = 4; Backend.library-changed(); }
+            }
+        }
+
+        if Backend.library-view == 0: ListView {
+            for t[i] in Backend.library: TrackRow {
+                track: t;
+                index: i;
+                list: "library";
+                play => { Backend.play-from("library", i); }
+                menu(x, y) => { Ui.open-menu("library", i, x, y); }
+            }
+        }
+
+        if Backend.library-view == 1: artists-sv := ScrollView {
+            property <length> gap: 8px;
+            property <int> cols: Math.max(2, Math.floor((self.visible-width + self.gap) / (160px + self.gap)));
+            property <length> card-w: (self.visible-width - (self.cols - 1) * self.gap) / self.cols;
+            content-width: self.visible-width;
+            content-height: Math.ceil(Backend.artists.length / self.cols) * (self.card-w + 56px + self.gap);
+            for a[i] in Backend.artists: ArtistCard {
+                x: Math.mod(i, artists-sv.cols) * (artists-sv.card-w + artists-sv.gap);
+                y: Math.floor(i / artists-sv.cols) * (artists-sv.card-w + 56px + artists-sv.gap);
+                width: artists-sv.card-w;
+                height: artists-sv.card-w + 56px;
+                name: a.name;
+                subtitle: a.subtitle;
+                image: a.image;
+                has-image: a.has-image;
+                clicked => { Backend.open-artist(a.name); }
+            }
+        }
+    }
+}

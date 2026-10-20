@@ -1,0 +1,829 @@
+import { Theme } from "theme.slint";
+import { Icons } from "icons.slint";
+import { TrackItem, Backend } from "backend.slint";
+
+// Round icon button with a Material state layer.
+export component IconButton inherits Rectangle {
+    in property <image> icon;
+    in property <length> size: 40px;
+    in property <length> icon-size: 24px;
+    in property <bool> active: false;
+    in property <bool> filled: false;
+    in property <bool> tonal: false;
+    in property <bool> enabled: true;
+    in property <color> tint: Theme.on-surface-variant;
+    in property <string> tooltip;
+    callback clicked();
+
+    width: root.size;
+    height: root.size;
+    border-radius: root.size / 2;
+    // Disabled filled buttons use the Material "disabled container" instead of a faded icon on
+    // a bright background.
+    background: root.filled ? (root.enabled ? Theme.primary : Theme.on-surface.with-alpha(0.12))
+        : root.tonal ? Theme.secondary-container : transparent;
+
+    property <color> content: !root.enabled ? Theme.on-surface.with-alpha(0.38)
+        : root.filled ? Theme.on-primary
+        : root.tonal ? Theme.on-secondary-container
+        : root.active ? Theme.primary : root.tint;
+
+    Rectangle {
+        border-radius: root.border-radius;
+        background: !root.enabled ? transparent
+            : ta.pressed ? root.content.with-alpha(0.14)
+            : ta.has-hover ? root.content.with-alpha(0.08) : transparent;
+        animate background { duration: Theme.low-end ? 0ms : 120ms; }
+    }
+
+    Image {
+        source: root.icon;
+        width: root.icon-size;
+        height: root.icon-size;
+        colorize: root.content;
+    }
+
+    if root.active && !root.filled && !root.tonal: Rectangle {
+        y: root.height - 6px;
+        width: 4px;
+        height: 4px;
+        border-radius: 2px;
+        background: Theme.primary;
+    }
+
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Material 3 slider. `value` is shown unless the user is dragging.
+export component M3Slider inherits Rectangle {
+    in property <float> value;
+    in property <float> minimum: 0;
+    in property <float> maximum: 1;
+    in property <bool> vertical: false;
+    in property <float> wheel-step: 0;
+    in property <color> accent: Theme.primary;
+    in property <color> track: Theme.surface-container-highest;
+    in property <length> thickness: 4px;
+    out property <bool> dragging: ta.pressed;
+    callback changed(float);
+    callback released(float);
+
+    property <float> drag-value;
+    property <float> shown: ta.pressed ? root.drag-value : root.value;
+    property <float> ratio: root.maximum > root.minimum ? clamp((root.shown - root.minimum) / (root.maximum - root.minimum), 0, 1) : 0;
+
+    function value-at(px: length, py: length) -> float {
+        let r = root.vertical ? 1 - clamp(py / root.height, 0, 1) : clamp(px / root.width, 0, 1);
+        return root.minimum + r * (root.maximum - root.minimum);
+    }
+
+    min-width: root.vertical ? 24px : 60px;
+    min-height: root.vertical ? 60px : 24px;
+
+    Rectangle {
+        x: root.vertical ? (root.width - root.thickness) / 2 : 0;
+        y: root.vertical ? 0 : (root.height - root.thickness) / 2;
+        width: root.vertical ? root.thickness : root.width;
+        height: root.vertical ? root.height : root.thickness;
+        border-radius: root.thickness / 2;
+        background: root.track;
+    }
+
+    Rectangle {
+        x: root.vertical ? (root.width - root.thickness) / 2 : 0;
+        y: root.vertical ? root.height * (1 - root.ratio) : (root.height - root.thickness) / 2;
+        width: root.vertical ? root.thickness : root.width * root.ratio;
+        height: root.vertical ? root.height * root.ratio : root.thickness;
+        border-radius: root.thickness / 2;
+        background: root.accent;
+    }
+
+    Rectangle {
+        width: ta.pressed ? 18px : ta.has-hover ? 16px : 12px;
+        height: self.width;
+        border-radius: self.width / 2;
+        background: root.accent;
+        x: root.vertical ? (root.width - self.width) / 2 : root.width * root.ratio - self.width / 2;
+        y: root.vertical ? root.height * (1 - root.ratio) - self.height / 2 : (root.height - self.height) / 2;
+        animate width { duration: Theme.low-end ? 0ms : 100ms; }
+    }
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        pointer-event(e) => {
+            if e.button == PointerEventButton.left {
+                if e.kind == PointerEventKind.down {
+                    root.drag-value = root.value-at(self.mouse-x, self.mouse-y);
+                    root.changed(root.drag-value);
+                } else if e.kind == PointerEventKind.up {
+                    root.released(root.drag-value);
+                }
+            }
+        }
+        moved => {
+            if self.pressed {
+                root.drag-value = root.value-at(self.mouse-x, self.mouse-y);
+                root.changed(root.drag-value);
+            }
+        }
+        scroll-event(e) => {
+            if root.wheel-step > 0 {
+                let dir = e.delta-y > 0 ? 1 : -1;
+                let v = clamp(root.value + dir * root.wheel-step * (root.maximum - root.minimum), root.minimum, root.maximum);
+                root.released(v);
+                return accept;
+            }
+            return reject;
+        }
+    }
+}
+
+// Navigation drawer entry.
+export component NavItem inherits Rectangle {
+    in property <image> icon;
+    in property <string> text;
+    in property <bool> selected: false;
+    in property <string> trailing;
+    // Icon only (collapsed sidebar).
+    in property <bool> compact: false;
+    callback clicked();
+
+    height: 48px;
+    border-radius: 24px * Theme.pill;
+    background: root.selected ? Theme.secondary-container
+        : ta.has-hover ? Theme.on-surface.with-alpha(0.08) : transparent;
+    animate background { duration: Theme.low-end ? 0ms : 120ms; }
+
+    HorizontalLayout {
+        padding-left: root.compact ? (root.width - 22px) / 2 : 16px;
+        padding-right: root.compact ? 0px : 16px;
+        spacing: 12px;
+        Image {
+            source: root.icon;
+            width: 22px;
+            colorize: root.selected ? Theme.on-secondary-container : Theme.on-surface-variant;
+        }
+        // Takes the free width so the counts line up on the right.
+        if !root.compact: Text {
+            text: root.text;
+            horizontal-stretch: 1;
+            preferred-width: 0px;
+            vertical-alignment: center;
+            overflow: elide;
+            font-size: 14px;
+            font-weight: root.selected ? 700 : 500;
+            color: root.selected ? Theme.on-secondary-container : Theme.on-surface-variant;
+        }
+        if !root.compact && root.trailing != "": Text {
+            width: 32px;
+            text: root.trailing;
+            horizontal-alignment: right;
+            vertical-alignment: center;
+            font-size: 12px;
+            color: Theme.on-surface-variant;
+        }
+    }
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Album art with a placeholder.
+export component Cover inherits Rectangle {
+    in property <image> source;
+    in property <bool> has-image: false;
+    in property <image> placeholder: Icons.note;
+    border-radius: Theme.radius-small;
+    clip: true;
+    background: Theme.surface-container-highest;
+    if !root.has-image: Image {
+        source: root.placeholder;
+        width: root.width * 0.45;
+        height: root.height * 0.45;
+        colorize: Theme.on-surface-variant;
+    }
+    if root.has-image: Image {
+        source: root.source;
+        width: root.width;
+        height: root.height;
+        image-fit: cover;
+    }
+}
+
+export component SourceBadge inherits Rectangle {
+    in property <string> source;
+    width: 22px;
+    height: 22px;
+    border-radius: 11px;
+    background: Theme.surface-container-highest;
+    Image {
+        width: 14px;
+        source: root.source == "YouTube" ? Icons.youtube
+            : root.source == "SoundCloud" ? Icons.soundcloud
+            : root.source == "Nextcloud" ? Icons.cloud : Icons.folder;
+        colorize: root.source == "YouTube" ? #e53935
+            : root.source == "SoundCloud" ? #ff5500
+            : root.source == "Nextcloud" ? #0082c9 : Theme.on-surface-variant;
+    }
+}
+
+// One row in a track list. In reorderable lists the dragged row follows the pointer and
+// the other rows slide out of its way.
+export component TrackRow inherits Rectangle {
+    in property <TrackItem> track;
+    in property <int> index;
+    // List id for Backend calls ("library", "queue", ...).
+    in property <string> list;
+    in property <bool> editable: false;
+    in property <bool> show-album: true;
+    in property <bool> compact: false;
+    // Drag state of the whole list, shared by all rows.
+    in property <int> drag-from: -1;
+    in property <int> drop-index: -1;
+    in property <length> drag-dy: 0;
+    callback play();
+    callback menu(length, length);
+    callback remove();
+    callback drag-moved(length);
+    callback drag-ended();
+    // Pointer position (window coordinates) when the drag started.
+    property <length> drag-start-y;
+
+    property <bool> dragged: root.drag-from == root.index;
+    property <length> shift: root.drag-from < 0 || root.dragged ? 0px
+        : root.drag-from < root.index && root.index <= root.drop-index ? -root.height
+        : root.drop-index <= root.index && root.index < root.drag-from ? root.height : 0px;
+
+    height: Theme.row-height;
+    z: root.dragged ? 10 : 0;
+
+    // Slides when another row is dragged past this one.
+    slot := Rectangle {
+        y: root.shift;
+        width: root.width;
+        height: root.height;
+        animate y { duration: Theme.low-end ? 0ms : 180ms; easing: ease-out; }
+
+        // Follows the pointer while this row is dragged.
+        card := Rectangle {
+            y: root.dragged ? root.drag-dy : 0px;
+            width: parent.width;
+            height: parent.height;
+            border-radius: Theme.radius-small;
+            background: root.dragged ? Theme.surface-container-highest
+                : root.track.playing ? Theme.secondary-container.with-alpha(0.55)
+                : ta.has-hover ? Theme.on-surface.with-alpha(0.06) : transparent;
+            drop-shadow-blur: root.dragged && !Theme.low-end ? 16px : 0px;
+            drop-shadow-offset-y: root.dragged ? 4px : 0px;
+            drop-shadow-color: #00000070;
+
+            ta := TouchArea {
+                double-clicked => { root.play(); }
+                pointer-event(e) => {
+                    if e.button == PointerEventButton.right && e.kind == PointerEventKind.up {
+                        root.menu(root.absolute-position.x + self.mouse-x, root.absolute-position.y + self.mouse-y);
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                padding-left: 8px;
+                padding-right: 4px;
+                spacing: 12px;
+
+                if root.editable: Rectangle {
+                    width: 24px;
+                    Image {
+                        source: Icons.drag;
+                        width: 20px;
+                        colorize: root.dragged ? Theme.primary : Theme.on-surface-variant;
+                    }
+                    // The handle moves with the dragged row, so its local mouse position would
+                    // feed back into the offset (flicker). Measure in window coordinates instead.
+                    TouchArea {
+                        mouse-cursor: root.dragged ? grabbing : grab;
+                        moved => {
+                            if self.pressed {
+                                root.drag-moved(self.absolute-position.y + self.mouse-y - root.drag-start-y);
+                            }
+                        }
+                        pointer-event(e) => {
+                            if e.kind == PointerEventKind.down {
+                                root.drag-start-y = self.absolute-position.y + self.mouse-y;
+                            }
+                            if e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel {
+                                root.drag-ended();
+                            }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    width: 32px;
+                    if !idx-ta.has-hover: Text {
+                        text: root.track.playing ? "♪" : "\{root.index + 1}";
+                        color: root.track.playing ? Theme.primary : Theme.on-surface-variant;
+                        font-size: 13px;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
+                    if idx-ta.has-hover: Image {
+                        source: Icons.play;
+                        width: 22px;
+                        colorize: Theme.on-surface;
+                    }
+                    idx-ta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.play(); }
+                    }
+                }
+
+                if Theme.show-covers: Cover {
+                    width: Math.min(40px, root.height - 12px);
+                    height: self.width;
+                    y: (root.height - self.height) / 2;
+                    source: root.track.cover;
+                    has-image: root.track.has-cover;
+                }
+
+                // Columns get no preferred width so every row splits the space the same way
+                // (otherwise long titles push the album column out of line).
+                VerticalLayout {
+                    alignment: center;
+                    spacing: 2px;
+                    horizontal-stretch: 2;
+                    Text {
+                        preferred-width: 0px;
+                        text: root.track.title;
+                        overflow: elide;
+                        font-size: 14px;
+                        font-weight: 500;
+                        color: root.track.playing ? Theme.primary : Theme.on-surface;
+                    }
+                    HorizontalLayout {
+                        preferred-width: 0px;
+                        Text {
+                            text: root.track.artist;
+                            overflow: elide;
+                            font-size: 12px;
+                            color: artist-ta.has-hover ? Theme.on-surface : Theme.on-surface-variant;
+                            artist-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { Backend.open-artist(root.track.artist); }
+                            }
+                        }
+                        Rectangle {
+                            horizontal-stretch: 1;
+                        }
+                    }
+                }
+
+                if root.show-album && Theme.show-album && !root.compact: Text {
+                    preferred-width: 0px;
+                    text: root.track.album;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                    vertical-alignment: center;
+                    font-size: 13px;
+                    color: Theme.on-surface-variant;
+                }
+
+                if !root.compact && Theme.show-source: SourceBadge {
+                    y: (root.height - self.height) / 2;
+                    source: root.track.source;
+                }
+
+                if !root.compact || root.track.favorite: IconButton {
+                    y: (root.height - self.height) / 2;
+                    icon: root.track.favorite ? Icons.star : Icons.star-outline;
+                    icon-size: 20px;
+                    tint: root.track.favorite ? Theme.primary : Theme.on-surface-variant;
+                    opacity: root.track.favorite || ta.has-hover ? 1 : 0.35;
+                    clicked => { Backend.toggle-favorite(root.list, root.index); }
+                }
+
+                Text {
+                    width: root.compact ? 40px : 52px;
+                    text: root.track.duration;
+                    horizontal-alignment: right;
+                    vertical-alignment: center;
+                    font-size: 13px;
+                    color: Theme.on-surface-variant;
+                }
+
+                if root.editable: IconButton {
+                    y: (root.height - self.height) / 2;
+                    icon: Icons.close;
+                    icon-size: 18px;
+                    clicked => { root.remove(); }
+                }
+
+                if !root.compact: IconButton {
+                    y: (root.height - self.height) / 2;
+                    icon: Icons.more;
+                    icon-size: 20px;
+                    clicked => {
+                        root.menu(root.absolute-position.x + self.x, root.absolute-position.y + self.y + self.height);
+                    }
+                }
+            }
+        }
+    }
+}
+
+export component MenuRow inherits Rectangle {
+    in property <string> text;
+    in property <image> icon;
+    in property <bool> has-icon: true;
+    callback clicked();
+    height: 40px;
+    background: ta.has-hover ? Theme.on-surface.with-alpha(0.08) : transparent;
+    HorizontalLayout {
+        padding-left: 16px;
+        padding-right: 16px;
+        spacing: 12px;
+        if root.has-icon: Image {
+            source: root.icon;
+            width: 20px;
+            colorize: Theme.on-surface-variant;
+        }
+        Text {
+            text: root.text;
+            vertical-alignment: center;
+            overflow: elide;
+            color: Theme.on-surface;
+        }
+    }
+    ta := TouchArea {
+        clicked => { root.clicked(); }
+    }
+}
+
+// Filter chip.
+export component Chip inherits Rectangle {
+    in property <string> text;
+    in property <bool> selected: false;
+    in property <bool> enabled: true;
+    opacity: root.enabled ? 1 : 0.38;
+    callback clicked();
+    height: 32px;
+    min-width: label.preferred-width + 32px;
+    border-radius: Theme.radius-small;
+    border-width: root.selected ? 0 : 1px;
+    border-color: Theme.outline-variant;
+    background: root.selected ? Theme.secondary-container : ta.has-hover ? Theme.on-surface.with-alpha(0.06) : transparent;
+    label := Text {
+        text: root.text;
+        font-size: 13px;
+        font-weight: 500;
+        color: root.selected ? Theme.on-secondary-container : Theme.on-surface-variant;
+    }
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// Filled / tonal / text button in Material 3 style.
+export component M3Button inherits Rectangle {
+    in property <string> text;
+    in property <image> icon;
+    in property <bool> has-icon: false;
+    // 0 filled, 1 tonal, 2 outlined, 3 text
+    in property <int> kind: 0;
+    in property <bool> enabled: true;
+    callback clicked();
+
+    property <color> fg: !root.enabled ? Theme.on-surface.with-alpha(0.38)
+        : root.kind == 0 ? Theme.on-primary
+        : root.kind == 1 ? Theme.on-secondary-container : Theme.primary;
+
+    height: 40px;
+    min-width: lay.preferred-width;
+    border-radius: 20px * Theme.pill;
+    border-width: root.kind == 2 ? 1px : 0;
+    border-color: Theme.outline;
+    background: !root.enabled && root.kind < 2 ? Theme.on-surface.with-alpha(0.12)
+        : root.kind == 0 ? Theme.primary
+        : root.kind == 1 ? Theme.secondary-container : transparent;
+
+    Rectangle {
+        border-radius: root.border-radius;
+        background: ta.pressed ? root.fg.with-alpha(0.12) : ta.has-hover ? root.fg.with-alpha(0.08) : transparent;
+    }
+
+    lay := HorizontalLayout {
+        padding-left: root.has-icon ? 16px : 24px;
+        padding-right: 24px;
+        spacing: 8px;
+        alignment: center;
+        if root.has-icon: Image {
+            source: root.icon;
+            width: 18px;
+            colorize: root.fg;
+        }
+        Text {
+            text: root.text;
+            vertical-alignment: center;
+            font-size: 14px;
+            font-weight: 600;
+            color: root.fg;
+        }
+    }
+
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+export component SectionHeader inherits Text {
+    font-size: 22px;
+    font-weight: 600;
+    color: Theme.on-surface;
+}
+
+// Card used for playlists on the home page.
+// The full "trax" logo, cropped to its lettering (the image has wide white margins).
+export component Wordmark inherits Image {
+    source: Icons.wordmark;
+    source-clip-x: 143;
+    source-clip-y: 51;
+    source-clip-width: 741;
+    source-clip-height: 333;
+    height: self.width * 333 / 741;
+    image-fit: fill;
+}
+
+// Default artwork: the trax X, plus the name for auto-generated playlists.
+export component LogoArt inherits Rectangle {
+    in property <bool> with-name: false;
+    background: Theme.surface-container-highest;
+    if !root.with-name: Image {
+        width: root.width * 0.56;
+        height: self.width;
+        source: Icons.mark;
+    }
+    // The full logo sits on its own white background, so the tile is white too.
+    if root.with-name: Rectangle {
+        background: #ffffff;
+        Wordmark {
+            width: root.width * 0.84;
+        }
+    }
+}
+
+export component PlaylistCard inherits Rectangle {
+    in property <string> title;
+    in property <string> subtitle;
+    in property <image> art;
+    in property <bool> has-art: false;
+    // Auto-generated playlist: the default artwork shows the trax name too.
+    in property <bool> auto: false;
+    callback clicked();
+    callback play();
+
+    height: 200px;
+    border-radius: Theme.radius-medium;
+    background: ta.has-hover ? Theme.surface-container-highest : Theme.surface-container-high;
+    animate background { duration: Theme.low-end ? 0ms : 150ms; }
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+        // Square, like the artwork itself, so nothing gets cropped.
+        Rectangle {
+            height: self.width;
+            border-radius: Theme.radius-small;
+            clip: true;
+            if root.has-art: Image {
+                width: parent.width;
+                height: parent.height;
+                source: root.art;
+                image-fit: cover;
+            }
+            if !root.has-art: LogoArt {
+                width: parent.width;
+                height: parent.height;
+                with-name: root.auto;
+            }
+            if ta.has-hover: IconButton {
+                x: parent.width - self.width - 8px;
+                y: parent.height - self.height - 8px;
+                size: 44px;
+                filled: true;
+                icon: Icons.play;
+                clicked => { root.play(); }
+            }
+        }
+        Text {
+            text: root.title;
+            font-size: 14px;
+            font-weight: 600;
+            overflow: elide;
+            color: Theme.on-surface;
+        }
+        Text {
+            text: root.subtitle;
+            font-size: 12px;
+            overflow: elide;
+            color: Theme.on-surface-variant;
+        }
+    }
+}
+
+export component StatCard inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+    in property <image> icon;
+    height: 96px;
+    border-radius: Theme.radius-medium;
+    background: Theme.surface-container-high;
+    HorizontalLayout {
+        padding: 16px;
+        spacing: 16px;
+        Rectangle {
+            width: 48px;
+            height: 48px;
+            y: 8px;
+            border-radius: 24px;
+            background: Theme.primary-container;
+            Image {
+                source: root.icon;
+                width: 24px;
+                colorize: Theme.on-primary-container;
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            spacing: 2px;
+            Text {
+                text: root.value;
+                font-size: 24px;
+                font-weight: 700;
+                overflow: elide;
+                color: Theme.on-surface;
+            }
+            Text {
+                text: root.label;
+                font-size: 12px;
+                overflow: elide;
+                color: Theme.on-surface-variant;
+            }
+        }
+    }
+}
+
+// Material 3 switch that follows the trax theme.
+export component M3Switch inherits Rectangle {
+    in property <bool> checked: false;
+    in property <bool> enabled: true;
+    callback toggled(bool);
+
+    width: 52px;
+    height: 32px;
+    border-radius: 16px;
+    border-width: root.checked ? 0 : 2px;
+    border-color: Theme.outline;
+    background: root.checked ? Theme.primary : Theme.surface-container-highest;
+    opacity: root.enabled ? 1 : 0.38;
+    animate background { duration: Theme.low-end ? 0ms : 150ms; }
+
+    Rectangle {
+        property <length> d: root.checked ? 24px : ta.pressed ? 28px : 16px;
+        width: self.d;
+        height: self.d;
+        border-radius: self.d / 2;
+        x: root.checked ? root.width - self.d - 4px : (root.height - self.d) / 2 + (ta.pressed ? 0 : 2px);
+        y: (root.height - self.d) / 2;
+        background: root.checked ? Theme.on-primary : Theme.outline;
+        animate x, width, height { duration: Theme.low-end ? 0ms : 150ms; easing: ease-out; }
+    }
+
+    ta := TouchArea {
+        enabled: root.enabled;
+        mouse-cursor: pointer;
+        clicked => {
+            root.toggled(!root.checked);
+        }
+    }
+}
+
+// Round artist tile (library artists grid, artist lists).
+export component ArtistCard inherits Rectangle {
+    in property <string> name;
+    in property <string> subtitle;
+    in property <image> image;
+    in property <bool> has-image: false;
+    callback clicked();
+
+    border-radius: Theme.radius-medium;
+    background: ta.has-hover ? Theme.surface-container-high : transparent;
+    animate background { duration: Theme.low-end ? 0ms : 150ms; }
+
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+        Rectangle {
+            height: self.width;
+            border-radius: self.width / 2;
+            clip: true;
+            background: Theme.surface-container-highest;
+            if root.has-image: Image {
+                width: parent.width;
+                height: parent.height;
+                source: root.image;
+                image-fit: cover;
+            }
+            if !root.has-image: Image {
+                width: parent.width * 0.4;
+                height: parent.height * 0.4;
+                source: Icons.note;
+                colorize: Theme.on-surface-variant;
+            }
+        }
+        Text {
+            text: root.name;
+            horizontal-alignment: center;
+            overflow: elide;
+            font-weight: 600;
+            color: Theme.on-surface;
+        }
+        Text {
+            text: root.subtitle;
+            horizontal-alignment: center;
+            overflow: elide;
+            font-size: 12px;
+            color: Theme.on-surface-variant;
+        }
+    }
+}
+
+// Material 3 indeterminate circular progress: an arc that grows and shrinks while the whole
+// indicator turns clockwise.
+export component M3Spinner inherits Rectangle {
+    in property <color> arc-color: Theme.primary;
+    in property <length> thickness: 3px;
+
+    // Low-end mode: a still arc instead of an animation (no per-frame redraws).
+    property <float> ms: Theme.low-end ? 666 : animation-tick() / 1ms;
+    property <float> period: 1333;
+    property <float> phase: Math.mod(root.ms, root.period) / root.period;
+    property <float> cycle: Math.floor(root.ms / root.period);
+    // Head runs ahead in the first half of a cycle, the tail catches up in the second.
+    property <float> grow: Math.min(root.phase * 2, 1);
+    property <float> shrink: Math.max(root.phase * 2 - 1, 0);
+    property <float> head: 10 + 260 * root.grow * root.grow * (3 - 2 * root.grow);
+    property <float> tail: 260 * root.shrink * root.shrink * (3 - 2 * root.shrink);
+    property <float> base: Math.mod(root.cycle * 270 + root.ms / 1568 * 360, 360) - 90;
+    property <float> start: root.base + root.tail;
+    property <float> end: root.base + root.head;
+    property <float> r: 50 - root.thickness / root.width * 50;
+
+    Path {
+        width: root.width;
+        height: root.height;
+        viewbox-width: 100;
+        viewbox-height: 100;
+        fill: transparent;
+        stroke: root.arc-color;
+        stroke-width: root.thickness;
+        commands: "M \{50 + root.r * Math.cos(root.start * 1deg)} \{50 + root.r * Math.sin(root.start * 1deg)} "
+            + "A \{root.r} \{root.r} 0 \{root.end - root.start > 180 ? 1 : 0} 1 "
+            + "\{50 + root.r * Math.cos(root.end * 1deg)} \{50 + root.r * Math.sin(root.end * 1deg)}";
+    }
+}
+
+// Wrapped text that reports its real height. Layouts otherwise size word-wrapped text as a
+// single line, which makes scrolling pages too short (content gets cut off at the bottom).
+export component WrapText inherits Text {
+    wrap: word-wrap;
+    height: measure.preferred-height;
+    measure := Text {
+        visible: false;
+        width: root.width;
+        text: root.text;
+        wrap: word-wrap;
+        font-size: root.font-size;
+        font-weight: root.font-weight;
+        letter-spacing: root.letter-spacing;
+    }
+}

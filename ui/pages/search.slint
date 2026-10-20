@@ -1,0 +1,143 @@
+import { ScrollView, LineEdit } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { Icons } from "../icons.slint";
+import { Backend } from "../backend.slint";
+import { Ui } from "../ui_state.slint";
+import { TrackRow, SectionHeader, M3Spinner, WrapText, Chip } from "../widgets.slint";
+
+export component SearchPage inherits Rectangle {
+    VerticalLayout {
+        padding: 32px;
+        padding-bottom: 0;
+        spacing: 16px;
+
+        Text {
+            text: "Search";
+            font-size: 32px;
+            font-weight: 700;
+            color: Theme.on-surface;
+        }
+
+        Rectangle {
+            height: 56px;
+            border-radius: 28px;
+            background: Theme.surface-container-high;
+            HorizontalLayout {
+                padding-left: 20px;
+                padding-right: 8px;
+                spacing: 12px;
+                Image {
+                    source: Icons.search;
+                    width: 24px;
+                    colorize: Theme.on-surface-variant;
+                }
+                input := TextInput {
+                    text <=> Backend.search-query;
+                    vertical-alignment: center;
+                    font-size: 16px;
+                    color: Theme.on-surface;
+                    single-line: true;
+                    accepted => { Backend.search(self.text); }
+                    edited => { Backend.search(self.text); }
+                    init => { self.focus(); }
+                }
+            }
+            if Backend.search-query == "": Text {
+                x: 56px;
+                text: "Songs, artists, albums — in your library and online";
+                color: Theme.on-surface-variant;
+                font-size: 16px;
+            }
+        }
+
+        // Source filter, only when there is more than one place to search.
+        if Backend.yt-enabled || Backend.sc-enabled: HorizontalLayout {
+            spacing: 8px;
+            alignment: start;
+            for f[i] in [
+                { label: "Everywhere", scope: 0, show: true },
+                { label: "Library", scope: 1, show: true },
+                { label: "YouTube", scope: 2, show: Backend.yt-enabled },
+                { label: "SoundCloud", scope: 3, show: Backend.sc-enabled },
+            ]: Chip {
+                visible: f.show;
+                width: f.show ? self.preferred-width : 0px;
+                text: f.label;
+                selected: Backend.search-scope == f.scope;
+                clicked => {
+                    Backend.search-scope = f.scope;
+                    Backend.search(Backend.search-query);
+                }
+            }
+        }
+
+        sv := ScrollView {
+            content-width: self.visible-width;
+            content-height: content.preferred-height;
+
+            content := VerticalLayout {
+                width: sv.visible-width;
+                spacing: 8px;
+                padding-bottom: 24px;
+                alignment: start;
+
+                if Backend.search-local.length > 0: SectionHeader { text: "In your library"; }
+                for t[i] in Backend.search-local: TrackRow {
+                    track: t;
+                    index: i;
+                    list: "search-local";
+                    play => { Backend.play-from("search-local", i); }
+                    menu(x, y) => { Ui.open-menu("search-local", i, x, y); }
+                }
+
+                if Backend.yt-enabled && (Backend.search-scope == 0 || Backend.search-scope == 2) && Backend.search-query != "": HorizontalLayout {
+                    spacing: 12px;
+                    padding-top: 16px;
+                    alignment: start;
+                    SectionHeader { text: "YouTube"; }
+                    if Backend.yt-searching: M3Spinner {
+                        width: 24px;
+                        height: 24px;
+                    }
+                }
+                if Backend.search-error != "": WrapText {
+                    text: Backend.search-error;
+                    color: Theme.error;
+                }
+                for t[i] in Backend.search-yt: TrackRow {
+                    track: t;
+                    index: i;
+                    show-album: false;
+                    list: "search-yt";
+                    play => { Backend.play-from("search-yt", i); }
+                    menu(x, y) => { Ui.open-menu("search-yt", i, x, y); }
+                }
+
+                if Backend.sc-enabled && (Backend.search-scope == 0 || Backend.search-scope == 3) && Backend.search-query != "": HorizontalLayout {
+                    spacing: 12px;
+                    padding-top: 16px;
+                    alignment: start;
+                    SectionHeader { text: "SoundCloud"; }
+                    if Backend.sc-searching: M3Spinner {
+                        width: 24px;
+                        height: 24px;
+                    }
+                }
+                for t[i] in Backend.search-sc: TrackRow {
+                    track: t;
+                    index: i;
+                    show-album: false;
+                    list: "search-sc";
+                    play => { Backend.play-from("search-sc", i); }
+                    menu(x, y) => { Ui.open-menu("search-sc", i, x, y); }
+                }
+
+                if Backend.search-query != "" && Backend.search-local.length == 0 && Backend.search-yt.length == 0
+                    && Backend.search-sc.length == 0 && !Backend.yt-searching && !Backend.sc-searching: Text {
+                    text: Backend.yt-enabled || Backend.sc-enabled ? "No results." : "No results in your library. Enable YouTube or SoundCloud in Settings to search online.";
+                    color: Theme.on-surface-variant;
+                }
+            }
+        }
+    }
+}

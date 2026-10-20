@@ -1,0 +1,1223 @@
+import { ScrollView, LineEdit, TextEdit } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { Icons } from "../icons.slint";
+import { Backend } from "../backend.slint";
+import { M3Button, IconButton, Chip, M3Switch, M3Slider, M3Spinner, WrapText } from "../widgets.slint";
+
+component SettingsCard inherits Rectangle {
+    in property <string> title;
+    in property <string> description;
+    in property <image> icon;
+    in property <bool> has-toggle: false;
+    in property <bool> checked: false;
+    callback toggled(bool);
+
+    border-radius: Theme.radius-large;
+    background: Theme.surface-container;
+
+    VerticalLayout {
+        padding: 20px;
+        spacing: 14px;
+        HorizontalLayout {
+            spacing: 16px;
+            Rectangle {
+                width: 40px;
+                height: 40px;
+                border-radius: 20px;
+                background: Theme.secondary-container;
+                Image {
+                    source: root.icon;
+                    width: 22px;
+                    colorize: Theme.on-secondary-container;
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                spacing: 2px;
+                horizontal-stretch: 1;
+                Text {
+                    text: root.title;
+                    font-size: 16px;
+                    font-weight: 600;
+                    color: Theme.on-surface;
+                }
+                if root.description != "": WrapText {
+                    text: root.description;
+                    font-size: 12px;
+                    color: Theme.on-surface-variant;
+                }
+            }
+            if root.has-toggle: M3Switch {
+                y: 4px;
+                checked: root.checked;
+                toggled(on) => { root.toggled(on); }
+            }
+        }
+        Rectangle {
+            visible: !root.has-toggle || root.checked;
+            height: self.visible ? body.preferred-height : 0px;
+            body := VerticalLayout {
+                spacing: 12px;
+                @children
+            }
+        }
+    }
+}
+
+component Field inherits HorizontalLayout {
+    in property <string> label;
+    spacing: 12px;
+    Text {
+        width: 140px;
+        text: root.label;
+        vertical-alignment: center;
+        color: Theme.on-surface-variant;
+    }
+    @children
+}
+
+// Title (+ optional description) with a switch on the right.
+component ToggleRow inherits HorizontalLayout {
+    in property <string> title;
+    in property <string> description;
+    in property <bool> checked;
+    in property <bool> enabled: true;
+    callback toggled(bool);
+    spacing: 12px;
+    VerticalLayout {
+        horizontal-stretch: 1;
+        alignment: center;
+        Text {
+            text: root.title;
+            color: root.enabled ? Theme.on-surface : Theme.on-surface.with-alpha(0.38);
+        }
+        if root.description != "": WrapText {
+            text: root.description;
+            font-size: 12px;
+            color: Theme.on-surface-variant;
+        }
+    }
+    M3Switch {
+        y: 4px;
+        enabled: root.enabled;
+        checked: root.checked;
+        toggled(on) => { root.toggled(on); }
+    }
+}
+
+export component SettingsPage inherits Rectangle {
+    property <int> tab: 0;
+    property <bool> confirm-reset: false;
+    property <string> remap-from;
+    property <bool> spotify-help: Backend.sp-client-id == "";
+    property <string> remap-to;
+
+    sv := ScrollView {
+        content-width: self.visible-width;
+        content-height: content.preferred-height;
+
+        content := VerticalLayout {
+            width: sv.visible-width;
+            padding: 32px;
+            spacing: 16px;
+            alignment: start;
+
+            Text {
+                text: "Settings";
+                font-size: 32px;
+                font-weight: 700;
+                color: Theme.on-surface;
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                alignment: start;
+                for name[i] in ["Appearance", "Playback", "Sources", "Storage & data", "Performance", "System & updates"]: Chip {
+                    text: name;
+                    selected: root.tab == i;
+                    clicked => {
+                        root.tab = i;
+                        if i == 5 { Backend.refresh-default-status(); }
+                    }
+                }
+            }
+
+            if root.tab == 5: SettingsCard {
+                title: "Default music player";
+                description: "Open songs from anywhere on your PC with trax (double-click, or right-click → Open with). Each song you open is added to your library on its own; if it's gone when you play it later, it's removed again.";
+                icon: Icons.note;
+                Text {
+                    text: Backend.player-default-status;
+                    color: Theme.on-surface;
+                }
+                WrapText {
+                    text: "Windows asks you to confirm the default player yourself: the button below opens Default apps, where you pick trax for MP3, FLAC, M4A, AAC, OGG and WAV.";
+                    font-size: 12px;
+                    color: Theme.on-surface-variant;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    M3Button {
+                        text: "Make trax the default player";
+                        has-icon: true;
+                        icon: Icons.note;
+                        clicked => { Backend.make-default-player(); }
+                    }
+                    if Backend.player-registered: M3Button {
+                        text: "Remove from Open with";
+                        kind: 3;
+                        clicked => { Backend.unregister-player(); }
+                    }
+                }
+            }
+
+            if root.tab == 4: SettingsCard {
+                title: "Performance";
+                description: "For older or low-power PCs.";
+                icon: Icons.tune;
+                ToggleRow {
+                    title: "Low-end mode";
+                    description: "Turns off all animations, shadows, the loading animation, the visualizer and the sound effects (speed, pitch, reverb, echo, …) to keep CPU and GPU use minimal. Your settings for these stay saved and come back when you switch this off.";
+                    checked: Backend.low-end;
+                    toggled(on) => { Backend.set-low-end(on); }
+                }
+            }
+
+            if root.tab == 5: SettingsCard {
+                title: "Updates";
+                description: "trax " + Backend.version + " · " + Backend.install-kind + (Backend.install-kind == "Portable"
+                    ? " (updates replace trax.exe in its folder)" : " (updates run the new installer)");
+                icon: Icons.download;
+                ToggleRow {
+                    title: "Check for updates when trax starts";
+                    description: "Looks for a new release on GitHub. Nothing is downloaded until you choose to update.";
+                    checked: Backend.update-auto;
+                    toggled(on) => { Backend.set-update-auto(on); }
+                }
+                HorizontalLayout {
+                    spacing: 12px;
+                    if Backend.update-busy: M3Spinner {
+                        width: 20px;
+                        height: 20px;
+                    }
+                    WrapText {
+                        horizontal-stretch: 1;
+                        text: Backend.update-status == "" ? "Not checked yet." : Backend.update-status;
+                        color: Theme.on-surface-variant;
+                    }
+                }
+                if Backend.update-busy && Backend.update-progress > 0: Rectangle {
+                    height: 6px;
+                    border-radius: 3px;
+                    background: Theme.surface-container-highest;
+                    Rectangle {
+                        x: 0;
+                        width: parent.width * Backend.update-progress;
+                        border-radius: 3px;
+                        background: Theme.primary;
+                    }
+                }
+                if Backend.update-available && Backend.update-notes != "": Rectangle {
+                    border-radius: Theme.radius-medium;
+                    background: Theme.surface-container-high;
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 6px;
+                        Text {
+                            text: "What's new in " + Backend.update-version;
+                            font-weight: 600;
+                            color: Theme.on-surface;
+                        }
+                        WrapText {
+                            text: Backend.update-notes;
+                            font-size: 12px;
+                            color: Theme.on-surface-variant;
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    if Backend.update-available: M3Button {
+                        text: "Update to " + Backend.update-version;
+                        has-icon: true;
+                        icon: Icons.download;
+                        enabled: !Backend.update-busy;
+                        clicked => { Backend.install-update(); }
+                    }
+                    M3Button {
+                        text: "Check now";
+                        kind: Backend.update-available ? 2 : 1;
+                        has-icon: true;
+                        icon: Icons.refresh;
+                        enabled: !Backend.update-busy;
+                        clicked => { Backend.check-updates(); }
+                    }
+                    M3Button {
+                        text: "All releases";
+                        kind: 3;
+                        has-icon: true;
+                        icon: Icons.open;
+                        clicked => { Backend.open-release-page(); }
+                    }
+                }
+            }
+
+            if root.tab == 0: SettingsCard {
+                title: "Appearance";
+                icon: Icons.palette;
+
+                Text {
+                    text: "Mode";
+                    font-weight: 600;
+                    color: Theme.on-surface;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    Chip {
+                        text: "System";
+                        selected: Backend.theme-mode == 0;
+                        clicked => { Backend.set-theme(0); }
+                    }
+                    Chip {
+                        text: "Light";
+                        selected: Backend.theme-mode == 1;
+                        clicked => { Backend.set-theme(1); }
+                    }
+                    Chip {
+                        text: "Dark";
+                        selected: Backend.theme-mode == 2;
+                        clicked => { Backend.set-theme(2); }
+                    }
+                }
+
+                Text {
+                    text: "Accent colour";
+                    font-weight: 600;
+                    color: Theme.on-surface;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    for c in Backend.accent-presets: Rectangle {
+                        width: 32px;
+                        height: 32px;
+                        border-radius: 16px;
+                        border-width: Backend.accent == c.hex ? 3px : 0;
+                        border-color: Theme.on-surface;
+                        background: c.color;
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { Backend.set-accent(c.hex); }
+                        }
+                    }
+                    LineEdit {
+                        width: 120px;
+                        placeholder-text: "#rrggbb";
+                        accepted(t) => { Backend.set-accent(t); }
+                    }
+                }
+
+                Text {
+                    text: "Corners";
+                    font-weight: 600;
+                    color: Theme.on-surface;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    Chip {
+                        text: "Square";
+                        selected: Backend.corner-style == 0;
+                        clicked => { Backend.set-corner-style(0); }
+                    }
+                    Chip {
+                        text: "Subtle";
+                        selected: Backend.corner-style == 1;
+                        clicked => { Backend.set-corner-style(1); }
+                    }
+                    Chip {
+                        text: "Default";
+                        selected: Backend.corner-style == 2;
+                        clicked => { Backend.set-corner-style(2); }
+                    }
+                    Chip {
+                        text: "Round";
+                        selected: Backend.corner-style == 3;
+                        clicked => { Backend.set-corner-style(3); }
+                    }
+                }
+
+                Text {
+                    text: "List density";
+                    font-weight: 600;
+                    color: Theme.on-surface;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    Chip {
+                        text: "Compact";
+                        selected: Backend.density == 0;
+                        clicked => { Backend.set-density(0); }
+                    }
+                    Chip {
+                        text: "Comfortable";
+                        selected: Backend.density == 1;
+                        clicked => { Backend.set-density(1); }
+                    }
+                    Chip {
+                        text: "Spacious";
+                        selected: Backend.density == 2;
+                        clicked => { Backend.set-density(2); }
+                    }
+                }
+
+                Text {
+                    text: "Interface size";
+                    font-weight: 600;
+                    color: Theme.on-surface;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    for s in [90, 100, 110, 125, 150]: Chip {
+                        text: s + " %";
+                        selected: Backend.ui-scale == s;
+                        clicked => { Backend.set-ui-scale(s); }
+                    }
+                    if Backend.ui-scale-pending: Text {
+                        text: "Restart trax to apply";
+                        vertical-alignment: center;
+                        font-size: 12px;
+                        color: Theme.primary;
+                    }
+                }
+
+                Text {
+                    text: "Font";
+                    font-weight: 600;
+                    color: Theme.on-surface;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    LineEdit {
+                        placeholder-text: "System default (e.g. Segoe UI, Inter, Roboto)";
+                        text <=> Backend.font-family;
+                        accepted => { Backend.set-font-family(); }
+                    }
+                    M3Button {
+                        text: "Apply";
+                        kind: 1;
+                        clicked => { Backend.set-font-family(); }
+                    }
+                }
+
+                ToggleRow {
+                    title: "Album column in track lists";
+                    checked: Theme.show-album;
+                    toggled(on) => { Backend.set-ui-flag("show_album", on); }
+                }
+                ToggleRow {
+                    title: "Source icons in track lists";
+                    checked: Theme.show-source;
+                    toggled(on) => { Backend.set-ui-flag("show_source", on); }
+                }
+                ToggleRow {
+                    title: "Cover art in track lists";
+                    checked: Theme.show-covers;
+                    toggled(on) => { Backend.set-ui-flag("show_covers", on); }
+                }
+                ToggleRow {
+                    title: "Always use the compact sidebar";
+                    checked: Backend.sidebar-always-compact;
+                    toggled(on) => { Backend.set-ui-flag("sidebar_compact", on); }
+                }
+                ToggleRow {
+                    title: "Closing the window keeps trax running in the system tray";
+                    checked: Backend.close-to-tray;
+                    toggled(on) => { Backend.set-close-to-tray(on); }
+                }
+
+                Text {
+                    text: "Themes";
+                    font-weight: 600;
+                    color: Theme.on-surface;
+                }
+                WrapText {
+                    text: "A theme is a JSON file with colours, accent, corners and font. Export the current look to share or edit it, or import one.";
+                    font-size: 12px;
+                    color: Theme.on-surface-variant;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    for t in Backend.themes: Chip {
+                        text: t;
+                        selected: Backend.active-theme == t;
+                        clicked => { Backend.theme-select(t); }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    M3Button {
+                        text: "Import theme…";
+                        kind: 1;
+                        has-icon: true;
+                        icon: Icons.download;
+                        clicked => { Backend.theme-import(); }
+                    }
+                    M3Button {
+                        text: "Export current look…";
+                        kind: 2;
+                        has-icon: true;
+                        icon: Icons.upload;
+                        clicked => { Backend.theme-export(); }
+                    }
+                    if Backend.active-theme != "Default": M3Button {
+                        text: "Delete theme";
+                        kind: 3;
+                        has-icon: true;
+                        icon: Icons.delete;
+                        clicked => { Backend.theme-delete(); }
+                    }
+                }
+
+                Text {
+                    text: "Reset design";
+                    font-weight: 600;
+                    color: Theme.on-surface;
+                }
+                WrapText {
+                    text: "Puts mode, accent, corners, density, interface size, font and list columns back to their defaults. Saved themes are kept.";
+                    font-size: 12px;
+                    color: Theme.on-surface-variant;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    M3Button {
+                        text: root.confirm-reset ? "Click again to reset" : "Reset to default";
+                        kind: root.confirm-reset ? 0 : 2;
+                        has-icon: true;
+                        icon: Icons.history;
+                        clicked => {
+                            if root.confirm-reset {
+                                root.confirm-reset = false;
+                                Backend.reset-design();
+                            } else {
+                                root.confirm-reset = true;
+                            }
+                        }
+                    }
+                    if root.confirm-reset: M3Button {
+                        text: "Cancel";
+                        kind: 3;
+                        clicked => { root.confirm-reset = false; }
+                    }
+                }
+            }
+
+            if root.tab == 1: SettingsCard {
+                title: "Playback";
+                icon: Icons.play;
+
+                HorizontalLayout {
+                    spacing: 12px;
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        alignment: center;
+                        Text {
+                            text: "Preload upcoming songs";
+                            color: Theme.on-surface;
+                        }
+                        WrapText {
+                            text: "Downloads the next Nextcloud / YouTube tracks in the queue ahead of time so they start instantly.";
+                            font-size: 12px;
+                            color: Theme.on-surface-variant;
+                        }
+                    }
+                    M3Switch {
+                        y: 4px;
+                        checked: Backend.preload-enabled;
+                        toggled(on) => { Backend.set-preload(on); }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: 12px;
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        alignment: center;
+                        Text {
+                            text: "Crossfade";
+                            color: Theme.on-surface;
+                        }
+                        WrapText {
+                            text: "Fade the next song in while the current one fades out.";
+                            font-size: 12px;
+                            color: Theme.on-surface-variant;
+                        }
+                    }
+                    M3Switch {
+                        y: 4px;
+                        checked: Backend.crossfade-enabled;
+                        toggled(on) => { Backend.set-crossfade(on); }
+                    }
+                }
+
+                if Backend.crossfade-enabled: HorizontalLayout {
+                    spacing: 12px;
+                    Text {
+                        text: "0.5 s";
+                        vertical-alignment: center;
+                        font-size: 12px;
+                        color: Theme.on-surface-variant;
+                    }
+                    M3Slider {
+                        height: 32px;
+                        minimum: 0.5;
+                        maximum: 5;
+                        value: Backend.crossfade-secs;
+                        changed(v) => { Backend.set-crossfade-secs(Math.round(v * 2) / 2); }
+                        released(v) => { Backend.set-crossfade-secs(Math.round(v * 2) / 2); }
+                    }
+                    Text {
+                        text: "5 s";
+                        vertical-alignment: center;
+                        font-size: 12px;
+                        color: Theme.on-surface-variant;
+                    }
+                    Rectangle {
+                        width: 64px;
+                        height: 32px;
+                        border-radius: 8px;
+                        background: Theme.secondary-container;
+                        Text {
+                            text: Backend.crossfade-secs + " s";
+                            font-weight: 600;
+                            color: Theme.on-secondary-container;
+                        }
+                    }
+                }
+
+                if Backend.crossfade-enabled: HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    Text {
+                        text: "Curve";
+                        vertical-alignment: center;
+                        font-size: 12px;
+                        color: Theme.on-surface-variant;
+                    }
+                    Chip {
+                        text: "Linear";
+                        selected: Backend.crossfade-curve == 0;
+                        clicked => { Backend.set-crossfade-curve(0); }
+                    }
+                    Chip {
+                        text: "Equal power";
+                        selected: Backend.crossfade-curve == 1;
+                        clicked => { Backend.set-crossfade-curve(1); }
+                    }
+                    Chip {
+                        text: "S-curve";
+                        selected: Backend.crossfade-curve == 2;
+                        clicked => { Backend.set-crossfade-curve(2); }
+                    }
+                }
+                if Backend.crossfade-enabled: ToggleRow {
+                    title: "Also crossfade when skipping";
+                    description: "Next / previous and picking another song fade instead of cutting.";
+                    checked: Backend.crossfade-on-skip;
+                    toggled(on) => { Backend.set-crossfade-on-skip(on); }
+                }
+                ToggleRow {
+                    title: "Resume where you left off";
+                    description: "On start, restore the queue, the last song and its position.";
+                    checked: Backend.resume-enabled;
+                    toggled(on) => { Backend.set-resume(on); }
+                }
+                ToggleRow {
+                    title: "Fade on pause and resume";
+                    checked: Backend.pause-fade;
+                    toggled(on) => { Backend.set-pause-fade(on); }
+                }
+                ToggleRow {
+                    title: "Favourite song sections";
+                    description: "Play only the part of a song you marked (Edit info → Favourite section).";
+                    checked: Backend.sections-enabled;
+                    toggled(on) => { Backend.set-sections-enabled(on); }
+                }
+                if Backend.low-end: Text {
+                    text: "Visualizer options are off in low-end mode (Performance tab).";
+                    font-size: 12px;
+                    color: Theme.primary;
+                }
+                ToggleRow {
+                    title: "Visualizer in the player bar";
+                    enabled: !Backend.low-end;
+                    checked: Backend.visualizer;
+                    toggled(on) => { Backend.set-visualizer(on); }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    Text {
+                        text: "Fullscreen background";
+                        vertical-alignment: center;
+                        color: Theme.on-surface;
+                    }
+                    Chip {
+                        text: "Artwork";
+                        enabled: !Backend.low-end;
+                        selected: Backend.fs-background == 0;
+                        clicked => { Backend.set-fs-background(0); }
+                    }
+                    Chip {
+                        text: "Visualizer";
+                        enabled: !Backend.low-end;
+                        selected: Backend.fs-background == 1;
+                        clicked => { Backend.set-fs-background(1); }
+                    }
+                    Chip {
+                        text: "Artwork + visualizer";
+                        enabled: !Backend.low-end;
+                        selected: Backend.fs-background == 2;
+                        clicked => { Backend.set-fs-background(2); }
+                    }
+                }
+                if Backend.fs-background != 0: HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    Text {
+                        text: "Fullscreen visualizer style";
+                        vertical-alignment: center;
+                        color: Theme.on-surface;
+                    }
+                    for name[i] in ["Bars", "Mirror", "Wave", "Circle", "LED"]: Chip {
+                        text: name;
+                        enabled: !Backend.low-end;
+                        selected: Backend.visual-style == i;
+                        clicked => { Backend.set-visual-style(i); }
+                    }
+                }
+
+
+                HorizontalLayout {
+                    spacing: 12px;
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        alignment: center;
+                        Text {
+                            text: "Auto-generated playlists";
+                            color: Theme.on-surface;
+                        }
+                        WrapText {
+                            text: "Top this week / year, not played in a long time, … on the Home page.";
+                            font-size: 12px;
+                            color: Theme.on-surface-variant;
+                        }
+                    }
+                    M3Switch {
+                        y: 4px;
+                        checked: Backend.auto-playlists-enabled;
+                        toggled(on) => { Backend.set-auto-playlists(on); }
+                    }
+                }
+            }
+
+            if root.tab == 3: SettingsCard {
+                title: "Audio cache";
+                description: "YouTube and Nextcloud songs are kept on disk after playing. When the limit is reached, the songs not played for the longest time are removed first.";
+                icon: Icons.download;
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    for mb in [1024, 2048, 4096, 10240, 20480, 0]: Chip {
+                        text: mb == 0 ? "Unlimited" : mb >= 1024 ? Math.round(mb / 1024) + " GB" : mb + " MB";
+                        selected: Backend.cache-limit-mb == mb;
+                        clicked => { Backend.set-cache-limit(mb); }
+                    }
+                }
+                Text {
+                    text: Backend.cache-usage;
+                    font-size: 12px;
+                    color: Theme.on-surface-variant;
+                }
+            }
+
+            if root.tab == 2: SettingsCard {
+                title: "Local music";
+                description: "Folders on this computer. Tags and embedded covers are read automatically.";
+                icon: Icons.folder;
+                has-toggle: true;
+                checked: Backend.local-enabled;
+                toggled(on) => { Backend.set-connector("local", on); }
+
+                for f[i] in Backend.local-folders: HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: f;
+                        vertical-alignment: center;
+                        overflow: elide;
+                        color: Theme.on-surface;
+                    }
+                    IconButton {
+                        icon: Icons.delete;
+                        icon-size: 20px;
+                        clicked => { Backend.remove-local-folder(i); }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    M3Button {
+                        text: "Add folder";
+                        kind: 1;
+                        has-icon: true;
+                        icon: Icons.add;
+                        clicked => { Backend.add-local-folder(); }
+                    }
+                    M3Button {
+                        text: "Rescan";
+                        kind: 2;
+                        has-icon: true;
+                        icon: Icons.refresh;
+                        enabled: !Backend.scanning;
+                        clicked => { Backend.rescan-local(); }
+                    }
+                }
+            }
+
+            if root.tab == 2: SettingsCard {
+                title: "Nextcloud";
+                description: "Streams music from your Nextcloud via WebDAV. Create an app password under Settings → Security.";
+                icon: Icons.cloud;
+                has-toggle: true;
+                checked: Backend.nc-enabled;
+                toggled(on) => { Backend.set-connector("nextcloud", on); }
+
+                Field {
+                    label: "Server URL";
+                    LineEdit {
+                        placeholder-text: "https://cloud.example.com";
+                        text <=> Backend.nc-url;
+                    }
+                }
+                Field {
+                    label: "Username";
+                    LineEdit { text <=> Backend.nc-user; }
+                }
+                Field {
+                    label: "App password";
+                    LineEdit {
+                        input-type: password;
+                        text <=> Backend.nc-password;
+                    }
+                }
+                Field {
+                    label: "Music folder";
+                    LineEdit {
+                        placeholder-text: "Music";
+                        text <=> Backend.nc-folder;
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    M3Button {
+                        text: "Save";
+                        clicked => { Backend.save-nextcloud(); }
+                    }
+                    M3Button {
+                        text: "Test connection";
+                        kind: 2;
+                        clicked => { Backend.test-nextcloud(); }
+                    }
+                    M3Button {
+                        text: "Scan library";
+                        kind: 1;
+                        has-icon: true;
+                        icon: Icons.refresh;
+                        enabled: !Backend.scanning;
+                        clicked => { Backend.scan-nextcloud(); }
+                    }
+                }
+            }
+
+            if root.tab == 2: SettingsCard {
+                title: "YouTube & SoundCloud";
+                description: "Search and play online audio via yt-dlp. Audio is cached locally after the first play.";
+                icon: Icons.youtube;
+
+                ToggleRow {
+                    title: "YouTube";
+                    description: "Search results and playback from YouTube.";
+                    checked: Backend.yt-enabled;
+                    toggled(on) => { Backend.set-connector("youtube", on); }
+                }
+                ToggleRow {
+                    title: "SoundCloud";
+                    description: "Search results and playback from SoundCloud. Go+ tracks only play their 30-second preview.";
+                    checked: Backend.sc-enabled;
+                    toggled(on) => { Backend.set-connector("soundcloud", on); }
+                }
+
+                if Backend.yt-enabled || Backend.sc-enabled: Text {
+                    text: "trax doesn't include or download yt-dlp. To use these sources, get yt-dlp yourself from the yt-dlp project's GitHub releases (yt-dlp.exe) and either:\n  1. put yt-dlp.exe in trax's yt-dlp folder: " + Backend.ytdlp-folder + " (\"Open yt-dlp folder\" below), or\n  2. put it anywhere and enter its full path below, or\n  3. install it so it is on your PATH (e.g. winget install yt-dlp).\nThen click Save to check it. Keep it up to date yourself (yt-dlp -U).";
+                    wrap: word-wrap;
+                    color: Theme.on-surface-variant;
+                }
+                if Backend.yt-enabled || Backend.sc-enabled: Text {
+                    text: "trax advises against using these sources to stream or download copyrighted material without the rights holder's permission. You are responsible for following the services' terms and your country's copyright law.";
+                    wrap: word-wrap;
+                    color: Theme.on-surface-variant;
+                }
+                if Backend.yt-enabled || Backend.sc-enabled: Field {
+                    label: "yt-dlp path";
+                    LineEdit {
+                        placeholder-text: "leave empty to use the yt-dlp folder or PATH";
+                        text <=> Backend.ytdlp-path;
+                        accepted => { Backend.save-ytdlp(); }
+                    }
+                }
+                if Backend.yt-enabled || Backend.sc-enabled: Field {
+                    label: "Status";
+                    Text {
+                        text: Backend.ytdlp-status;
+                        vertical-alignment: center;
+                        color: Theme.on-surface;
+                    }
+                }
+                if Backend.yt-enabled || Backend.sc-enabled: HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    M3Button {
+                        text: "Save";
+                        clicked => { Backend.save-ytdlp(); }
+                    }
+                    M3Button {
+                        text: "Open yt-dlp folder";
+                        kind: 1;
+                        has-icon: true;
+                        icon: Icons.folder;
+                        clicked => { Backend.open-ytdlp-folder(); }
+                    }
+                }
+            }
+
+            if root.tab == 2: SettingsCard {
+                title: "Listening party";
+                description: "Listen together with friends (Party in the sidebar). Peers find each other through public Nostr relays and then connect directly; there is no trax server.";
+                icon: Icons.party;
+                Field {
+                    label: "Your name";
+                    LineEdit {
+                        placeholder-text: "Shown to everyone in the party";
+                        text <=> Backend.party-name;
+                        accepted => { Backend.party-save-settings(); }
+                    }
+                }
+                WrapText {
+                    text: "Some networks block direct connections (strict NAT). A TURN server relays the connection then; leave empty if parties work without it.";
+                    font-size: 12px;
+                    color: Theme.on-surface-variant;
+                }
+                Field {
+                    label: "TURN server";
+                    LineEdit {
+                        placeholder-text: "turn:turn.example.com:3478 (optional)";
+                        text <=> Backend.party-turn-url;
+                    }
+                }
+                Field {
+                    label: "TURN user";
+                    LineEdit {
+                        text <=> Backend.party-turn-user;
+                    }
+                }
+                Field {
+                    label: "TURN password";
+                    LineEdit {
+                        input-type: password;
+                        text <=> Backend.party-turn-pass;
+                    }
+                }
+                Field {
+                    label: "Relays";
+                    TextEdit {
+                        height: 110px;
+                        font-size: 12px;
+                        text <=> Backend.party-relays;
+                    }
+                }
+                HorizontalLayout {
+                    alignment: start;
+                    M3Button {
+                        text: "Save";
+                        clicked => { Backend.party-save-settings(); }
+                    }
+                }
+            }
+
+            if root.tab == 2: SettingsCard {
+                title: "Artist info & artwork (Spotify)";
+                description: "Artist images, genres and followers from Spotify, bios from Wikipedia, and missing album artwork. Needs a free Spotify developer app: switch on to see the setup steps. Your app and its use are subject to Spotify's Developer Terms; trax isn't affiliated with Spotify.";
+                icon: Icons.image;
+                has-toggle: true;
+                checked: Backend.spotify-enabled;
+                toggled(on) => { Backend.set-connector("spotify", on); }
+
+                // Setup guide, collapsed once credentials are entered.
+                Rectangle {
+                    border-radius: Theme.radius-medium;
+                    background: Theme.surface-container-high;
+                    VerticalLayout {
+                        padding: 16px;
+                        spacing: 8px;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text {
+                                text: "How to get a client ID and secret (free, about 2 minutes)";
+                                vertical-alignment: center;
+                                font-weight: 600;
+                                color: Theme.on-surface;
+                            }
+                            Rectangle { }
+                            M3Button {
+                                text: root.spotify-help ? "Hide" : "Show steps";
+                                kind: 3;
+                                clicked => { root.spotify-help = !root.spotify-help; }
+                            }
+                        }
+                        if root.spotify-help: VerticalLayout {
+                            spacing: 6px;
+                            for step[i] in [
+                                "Open the Spotify Developer Dashboard (button below) and log in with your Spotify account. Accept the developer terms if asked.",
+                                "Click “Create app”.",
+                                "App name: trax. App description: anything, e.g. “Personal music player”.",
+                                "Redirect URI: enter http://127.0.0.1:8888/callback and click Add. trax never uses it, but Spotify requires one.",
+                                "Under “Which API/SDKs are you planning to use?” tick Web API.",
+                                "Accept the terms and click Save.",
+                                "In your new app, open Settings: copy the Client ID, then click “View client secret” and copy the secret.",
+                                "Paste both into the fields below and click Save.",
+                            ]: HorizontalLayout {
+                                spacing: 10px;
+                                Rectangle {
+                                    width: 22px;
+                                    height: 22px;
+                                    border-radius: 11px;
+                                    background: Theme.primary-container;
+                                    Text {
+                                        text: "\{i + 1}";
+                                        font-size: 11px;
+                                        font-weight: 700;
+                                        color: Theme.on-primary-container;
+                                    }
+                                }
+                                WrapText {
+                                    text: step;
+                                    vertical-alignment: center;
+                                    color: Theme.on-surface;
+                                }
+                            }
+                            WrapText {
+                                text: "The app stays in Spotify's free development mode; nothing else is needed. If the dashboard won't let you create an app, check Spotify's current developer requirements there. Keep the secret private: it is stored only in trax's local database (and in your exports).";
+                                font-size: 12px;
+                                color: Theme.on-surface-variant;
+                            }
+                            HorizontalLayout {
+                                alignment: start;
+                                M3Button {
+                                    text: "Open Spotify Developer Dashboard";
+                                    kind: 1;
+                                    has-icon: true;
+                                    icon: Icons.open;
+                                    clicked => { Backend.open-url("https://developer.spotify.com/dashboard"); }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Field {
+                    label: "Client ID";
+                    LineEdit { text <=> Backend.sp-client-id; }
+                }
+                Field {
+                    label: "Client secret";
+                    LineEdit {
+                        input-type: password;
+                        text <=> Backend.sp-client-secret;
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    M3Button {
+                        text: "Save";
+                        clicked => { Backend.save-spotify(); }
+                    }
+                    M3Button {
+                        text: "Fill missing artwork";
+                        kind: 1;
+                        has-icon: true;
+                        icon: Icons.image;
+                        enabled: !Backend.scanning;
+                        clicked => { Backend.fill-missing-artwork(); }
+                    }
+                    M3Button {
+                        text: "Update all artists";
+                        kind: 2;
+                        has-icon: true;
+                        icon: Icons.refresh;
+                        enabled: !Backend.scanning;
+                        clicked => { Backend.update-all-artists(); }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 12px;
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        alignment: center;
+                        Text {
+                            text: "Keep artwork and artist info up to date automatically";
+                            color: Theme.on-surface;
+                        }
+                        WrapText {
+                            text: "While you listen and when you open an artist: fills in missing artwork and refreshes artist info older than 30 days. Your own edits and manual matches are never overwritten.";
+                            font-size: 12px;
+                            color: Theme.on-surface-variant;
+                        }
+                    }
+                    M3Switch {
+                        y: 4px;
+                        checked: Backend.spotify-auto;
+                        toggled(on) => { Backend.set-spotify-auto(on); }
+                    }
+                }
+            }
+
+            if root.tab == 3: SettingsCard {
+                title: "Your data";
+                description: "Export everything (library, play history, playlists, settings, artwork) into one file and import it on another PC.";
+                icon: Icons.upload;
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    M3Button {
+                        text: "Export…";
+                        has-icon: true;
+                        icon: Icons.upload;
+                        clicked => { Backend.export-data(); }
+                    }
+                    M3Button {
+                        text: "Import…";
+                        kind: 1;
+                        has-icon: true;
+                        icon: Icons.download;
+                        clicked => { Backend.import-data(); }
+                    }
+                    M3Button {
+                        text: "Open data folder";
+                        kind: 3;
+                        has-icon: true;
+                        icon: Icons.open;
+                        clicked => { Backend.open-data-dir(); }
+                    }
+                    M3Button {
+                        text: "Clear audio cache";
+                        kind: 3;
+                        has-icon: true;
+                        icon: Icons.delete;
+                        clicked => { Backend.clear-cache(); }
+                    }
+                }
+                WrapText {
+                    text: "Moved your music to a different drive or folder? Re-point local tracks without losing play counts:";
+                    font-size: 12px;
+                    color: Theme.on-surface-variant;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    LineEdit {
+                        placeholder-text: "Old path, e.g. D:\\Music";
+                        text <=> root.remap-from;
+                    }
+                    LineEdit {
+                        placeholder-text: "New path, e.g. E:\\Music";
+                        text <=> root.remap-to;
+                    }
+                    M3Button {
+                        text: "Re-map";
+                        kind: 2;
+                        enabled: root.remap-from != "";
+                        clicked => { Backend.remap-paths(root.remap-from, root.remap-to); }
+                    }
+                }
+                Text {
+                    text: "Data folder: " + Backend.data-dir;
+                    font-size: 12px;
+                    overflow: elide;
+                    color: Theme.on-surface-variant;
+                }
+            }
+
+            if root.tab == 2 && Backend.scan-status != "": HorizontalLayout {
+                spacing: 12px;
+                alignment: start;
+                if Backend.scanning: M3Spinner {
+                    width: 20px;
+                    height: 20px;
+                }
+                Text {
+                    text: Backend.scan-status;
+                    color: Theme.on-surface-variant;
+                }
+            }
+
+            if root.tab == 5: SettingsCard {
+                title: "About trax";
+                description: "trax " + Backend.version + " — free software under the GNU General Public License v3.0, with ABSOLUTELY NO WARRANTY.";
+                icon: Icons.note;
+                WrapText {
+                    text: "trax isn't affiliated with or endorsed by YouTube / Google, SoundCloud, Spotify, Nextcloud or Wikipedia; their names and marks belong to their owners. trax only connects to services you switch on. You're responsible for using them in line with their terms and with the copyright law where you live.";
+                    font-size: 12px;
+                    color: Theme.on-surface-variant;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    M3Button {
+                        text: "License";
+                        kind: 2;
+                        clicked => { Backend.open-legal("LICENSE"); }
+                    }
+                    M3Button {
+                        text: "Third-party licenses";
+                        kind: 2;
+                        clicked => { Backend.open-legal("THIRD_PARTY_LICENSES.txt"); }
+                    }
+                    M3Button {
+                        text: "Source code";
+                        kind: 3;
+                        has-icon: true;
+                        icon: Icons.open;
+                        clicked => { Backend.open-url("https://github.com/NUCL3ARN30N/trax"); }
+                    }
+                }
+            }
+
+            Text {
+                text: "trax " + Backend.version + " · Windows · Linux and macOS coming";
+                font-size: 12px;
+                color: Theme.on-surface-variant;
+            }
+        }
+    }
+}

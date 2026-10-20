@@ -1,0 +1,36 @@
+THIRD-PARTY SOFTWARE IN TRAX
+============================
+
+trax is free software under the GNU General Public License v3.0 (see LICENSE).
+It includes the components listed below, each under its own license. The full
+license texts follow.
+
+Not compiled from Rust crates:
+
+- Material Icons (ui/icons/*.svg, except soundcloud.svg and party.svg drawn for
+  trax), Copyright Google LLC, Apache License 2.0
+  (https://github.com/google/material-design-icons). The Apache-2.0 text is
+  included below.
+- Slint UI toolkit (https://slint.dev), used under GPL-3.0-only.
+- yt-dlp (https://github.com/yt-dlp/yt-dlp) is not part of trax. It is an
+  optional, separate program that users install themselves; trax neither ships
+  nor downloads it and only runs it as an external process. Unlicense.
+
+Rust crates compiled into trax.exe:
+
+{{#each overview}}
+- {{{name}}} ({{id}}): {{count}} crate(s)
+{{/each}}
+
+{{#each licenses}}
+================================================================================
+{{{name}}} ({{id}})
+
+Used by:
+{{#each used_by}}
+- {{crate.name}} {{crate.version}}{{#if crate.repository}} ({{{crate.repository}}}){{/if}}
+{{/each}}
+
+{{{text}}}
+
+{{/each}}

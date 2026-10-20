@@ -1,0 +1,921 @@
+import { ScrollView, LineEdit, TextEdit, Palette } from "std-widgets.slint";
+import { Theme } from "theme.slint";
+import { Icons } from "icons.slint";
+import { Backend, TrackItem, PlaylistItem, ArtistStat, ArtistItem, AlbumItem, MatchItem, AccentItem } from "backend.slint";
+import { Ui } from "ui_state.slint";
+import { NavItem, MenuRow, M3Button, IconButton, LogoArt, Wordmark, M3Spinner, WrapText } from "widgets.slint";
+import { HomePage } from "pages/home.slint";
+import { SearchPage } from "pages/search.slint";
+import { LibraryPage } from "pages/library.slint";
+import { PlaylistPage } from "pages/playlist.slint";
+import { SettingsPage } from "pages/settings.slint";
+import { ArtistPage } from "pages/artist.slint";
+import { PartyPage } from "pages/party.slint";
+import { PlayerBar, QueuePanel, EqPanel, FullscreenView } from "player.slint";
+import { TrayPopup, TrayState } from "tray.slint";
+
+export { Backend, Theme, TrackItem, PlaylistItem, ArtistStat, ArtistItem, AlbumItem, MatchItem, AccentItem, TrayPopup, TrayState }
+
+// Small label above a form field.
+component FieldLabel inherits Text {
+    font-size: 12px;
+    color: Theme.on-surface-variant;
+}
+
+component Sidebar inherits Rectangle {
+    // Narrow windows: icon-only rail.
+    in property <bool> compact: false;
+    width: root.compact ? 72px : 260px;
+
+    VerticalLayout {
+        padding-top: 8px;
+        padding-bottom: 12px;
+        spacing: 2px;
+
+        HorizontalLayout {
+            padding-left: 16px;
+            padding-bottom: 16px;
+            height: 64px;
+            alignment: start;
+            if root.compact: Image {
+                width: 40px;
+                height: 40px;
+                source: Icons.mark;
+            }
+            // The logo has a white background; show it as a white tile in both themes.
+            if !root.compact: Rectangle {
+                width: 120px;
+                border-radius: 10px;
+                background: #ffffff;
+                Wordmark {
+                    width: 104px;
+                }
+            }
+        }
+
+        NavItem {
+            compact: root.compact;
+            icon: Icons.home;
+            text: "Home";
+            selected: Backend.page == 0;
+            clicked => { Backend.navigate(0); }
+        }
+        NavItem {
+            compact: root.compact;
+            icon: Icons.search;
+            text: "Search";
+            selected: Backend.page == 1;
+            clicked => { Backend.navigate(1); }
+        }
+        NavItem {
+            compact: root.compact;
+            icon: Icons.library;
+            text: "Library";
+            selected: Backend.page == 2;
+            clicked => { Backend.navigate(2); }
+        }
+        NavItem {
+            compact: root.compact;
+            icon: Icons.party;
+            text: Backend.party-mode == 0 ? "Party" : "Party · live";
+            selected: Backend.page == 6;
+            clicked => { Backend.navigate(6); }
+        }
+
+        HorizontalLayout {
+            padding-left: root.compact ? 20px : 16px;
+            padding-top: 16px;
+            padding-bottom: 4px;
+            if !root.compact: Text {
+                text: "Playlists";
+                font-size: 13px;
+                font-weight: 600;
+                vertical-alignment: center;
+                color: Theme.on-surface-variant;
+            }
+            IconButton {
+                size: 32px;
+                icon-size: 20px;
+                icon: Icons.add;
+                clicked => {
+                    Ui.dialog-text = "";
+                    Ui.dialog = 1;
+                }
+            }
+        }
+
+        sv := ScrollView {
+            vertical-stretch: 1;
+            content-width: self.visible-width;
+            content-height: list.preferred-height;
+            list := VerticalLayout {
+                width: sv.visible-width;
+                spacing: 2px;
+                alignment: start;
+                for p in Backend.playlists: NavItem {
+                    compact: root.compact;
+                    icon: p.favorites ? Icons.star : Icons.playlist;
+                    text: p.name;
+                    trailing: p.count;
+                    selected: Backend.page == 3 && Backend.playlist-id == p.id;
+                    clicked => { Backend.open-playlist(p.id); }
+                }
+            }
+        }
+
+        NavItem {
+            compact: root.compact;
+            icon: Icons.settings;
+            text: "Settings";
+            selected: Backend.page == 4;
+            clicked => { Backend.navigate(4); }
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    title: Backend.has-track ? Backend.now-title + " · " + Backend.now-artist + " — trax" : "trax";
+    icon: @image-url("../assets/logo/AppIcon.iconset/icon_256x256.png");
+    min-width: 760px;
+    min-height: 560px;
+    preferred-width: 1320px;
+    preferred-height: 840px;
+    background: Theme.surface;
+    default-font-size: 14px;
+    default-font-family: Theme.font-family;
+
+    property <bool> is-dark: Theme.dark;
+    changed is-dark => {
+        Palette.color-scheme = self.is-dark ? ColorScheme.dark : ColorScheme.light;
+    }
+    init => {
+        Palette.color-scheme = self.is-dark ? ColorScheme.dark : ColorScheme.light;
+    }
+
+    property <int> menu-serial: Ui.menu-serial;
+    changed menu-serial => { track-menu.show(); }
+
+    VerticalLayout {
+        HorizontalLayout {
+            padding: 8px;
+            padding-bottom: 0;
+            spacing: 8px;
+            vertical-stretch: 1;
+
+            Sidebar {
+                compact: Backend.narrow-nav;
+            }
+
+            Rectangle {
+                horizontal-stretch: 1;
+                border-radius: Theme.radius-large;
+                background: Theme.surface-container-low;
+                clip: true;
+                VerticalLayout {
+                    // New version available (hidden with "Later" until the next start).
+                    if Backend.update-banner && Backend.update-available: Rectangle {
+                        background: Theme.primary-container;
+                        HorizontalLayout {
+                            padding-left: 16px;
+                            padding-right: 8px;
+                            padding-top: 6px;
+                            padding-bottom: 6px;
+                            spacing: 8px;
+                            Image {
+                                source: Icons.download;
+                                width: 20px;
+                                colorize: Theme.on-primary-container;
+                            }
+                            Text {
+                                horizontal-stretch: 1;
+                                vertical-alignment: center;
+                                overflow: elide;
+                                text: Backend.update-busy
+                                    ? Backend.update-status + (Backend.update-progress > 0 ? " " + Math.round(Backend.update-progress * 100) + " %" : "")
+                                    : "trax " + Backend.update-version + " is available.";
+                                color: Theme.on-primary-container;
+                            }
+                            if !Backend.update-busy: M3Button {
+                                text: "Release notes";
+                                kind: 3;
+                                clicked => { Backend.open-release-page(); }
+                            }
+                            if !Backend.update-busy: M3Button {
+                                text: "Later";
+                                kind: 3;
+                                clicked => { Backend.update-banner = false; }
+                            }
+                            if !Backend.update-busy: M3Button {
+                                text: "Update now";
+                                clicked => { Backend.install-update(); }
+                            }
+                        }
+                    }
+                    // Back / forward (also the mouse side buttons and Alt+Left/Right).
+                    HorizontalLayout {
+                        height: 44px;
+                        padding-left: 16px;
+                        padding-top: 8px;
+                        spacing: 6px;
+                        alignment: start;
+                        IconButton {
+                            size: 32px;
+                            icon-size: 22px;
+                            tonal: true;
+                            icon: Icons.back;
+                            enabled: Backend.can-go-back;
+                            clicked => { Backend.go-back(); }
+                        }
+                        IconButton {
+                            size: 32px;
+                            icon-size: 22px;
+                            tonal: true;
+                            icon: Icons.forward;
+                            enabled: Backend.can-go-forward;
+                            clicked => { Backend.go-forward(); }
+                        }
+                    }
+                    Rectangle {
+                        vertical-stretch: 1;
+                        if Backend.page == 0: HomePage {
+                            width: 100%;
+                            height: 100%;
+                        }
+                        if Backend.page == 1: SearchPage {
+                            width: 100%;
+                            height: 100%;
+                        }
+                        if Backend.page == 2: LibraryPage {
+                            width: 100%;
+                            height: 100%;
+                        }
+                        if Backend.page == 3: PlaylistPage {
+                            width: 100%;
+                            height: 100%;
+                        }
+                        if Backend.page == 4: SettingsPage {
+                            width: 100%;
+                            height: 100%;
+                        }
+                        if Backend.page == 5: ArtistPage {
+                            width: 100%;
+                            height: 100%;
+                        }
+                        if Backend.page == 6: PartyPage {
+                            width: 100%;
+                            height: 100%;
+                        }
+                    }
+                }
+            }
+
+            if Ui.show-queue: QueuePanel {
+                width: 360px;
+            }
+        }
+        PlayerBar { }
+    }
+
+    if Ui.show-eq: Rectangle {
+        TouchArea {
+            clicked => { Ui.show-eq = false; }
+        }
+        EqPanel {
+            x: Math.max(8px, root.width - self.width - 24px);
+            height: Math.min(520px, root.height - 120px);
+            width: Math.min(760px, root.width - 16px);
+            y: Math.max(8px, root.height - self.height - 104px);
+        }
+    }
+
+    if Backend.fullscreen: FullscreenView {
+        width: root.width;
+        height: root.height;
+    }
+
+    track-menu := PopupWindow {
+        x: Math.min(Ui.menu-x, root.width - 260px);
+        y: Math.max(8px, Math.min(Ui.menu-y, root.height - menu-body.preferred-height - 8px));
+        width: 250px;
+
+        menu-body := Rectangle {
+            border-radius: Theme.radius-small;
+            background: Theme.surface-container;
+            drop-shadow-blur: Theme.low-end ? 0px : 12px;
+            drop-shadow-color: #00000060;
+
+            VerticalLayout {
+                padding-top: 8px;
+                padding-bottom: 8px;
+                MenuRow {
+                    text: "Play now";
+                    icon: Icons.play;
+                    clicked => { Backend.play-from(Ui.menu-list, Ui.menu-index); }
+                }
+                MenuRow {
+                    text: "Play next";
+                    icon: Icons.queue;
+                    clicked => { Backend.queue-play-next(Ui.menu-list, Ui.menu-index); }
+                }
+                MenuRow {
+                    text: "Add to queue";
+                    icon: Icons.add;
+                    clicked => { Backend.queue-add(Ui.menu-list, Ui.menu-index); }
+                }
+                MenuRow {
+                    text: "Edit info…";
+                    icon: Icons.edit;
+                    clicked => {
+                        Backend.edit-track-begin(Ui.menu-list, Ui.menu-index);
+                        Ui.dialog = 5;
+                    }
+                }
+                if Ui.menu-list == "playlist" && Backend.playlist-editable: MenuRow {
+                    text: "Remove from playlist";
+                    icon: Icons.delete;
+                    clicked => { Backend.playlist-remove(Ui.menu-index); }
+                }
+                if Ui.menu-list == "queue": MenuRow {
+                    text: "Remove from queue";
+                    icon: Icons.delete;
+                    clicked => { Backend.queue-remove(Ui.menu-index); }
+                }
+                Rectangle {
+                    height: 1px;
+                    background: Theme.outline-variant;
+                }
+                Text {
+                    x: 16px;
+                    height: 32px;
+                    text: "Add to playlist";
+                    vertical-alignment: center;
+                    font-size: 12px;
+                    color: Theme.on-surface-variant;
+                }
+                MenuRow {
+                    text: "New playlist…";
+                    icon: Icons.playlist-add;
+                    clicked => {
+                        Ui.dialog-text = "";
+                        Ui.dialog = 3;
+                    }
+                }
+                for p in Backend.playlists: MenuRow {
+                    text: p.name;
+                    icon: Icons.playlist;
+                    clicked => { Backend.add-to-playlist(Ui.menu-list, Ui.menu-index, p.id); }
+                }
+            }
+        }
+    }
+
+    if Ui.dialog >= 1 && Ui.dialog <= 4: Rectangle {
+        background: #00000080;
+        TouchArea { }
+        Rectangle {
+            width: 400px;
+            height: dialog-layout.preferred-height;
+            border-radius: Theme.radius-xl;
+            background: Theme.surface-container-high;
+
+            dialog-layout := VerticalLayout {
+                padding: 24px;
+                spacing: 16px;
+                Text {
+                    text: Ui.dialog == 4 ? "Delete playlist?" : "New playlist";
+                    font-size: 24px;
+                    color: Theme.on-surface;
+                }
+                if Ui.dialog == 4: WrapText {
+                    text: "“" + Backend.playlist-name + "” will be deleted. The tracks stay in your library.";
+                    color: Theme.on-surface-variant;
+                }
+                if Ui.dialog != 4: LineEdit {
+                    placeholder-text: "Playlist name";
+                    text <=> Ui.dialog-text;
+                    init => { self.focus(); }
+                    accepted => { ok.clicked(); }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: end;
+                    if Ui.dialog == 1: M3Button {
+                        text: "Import shared…";
+                        kind: 3;
+                        clicked => {
+                            Ui.dialog-text = "";
+                            Backend.share-error = "";
+                            Ui.dialog = 10;
+                        }
+                    }
+                    if Ui.dialog == 1: Rectangle { horizontal-stretch: 1; }
+                    M3Button {
+                        text: "Cancel";
+                        kind: 3;
+                        clicked => { Ui.dialog = 0; }
+                    }
+                    ok := M3Button {
+                        text: Ui.dialog == 4 ? "Delete" : "Create";
+                        enabled: Ui.dialog == 4 || Ui.dialog-text != "";
+                        clicked => {
+                            if Ui.dialog == 1 {
+                                Backend.create-playlist(Ui.dialog-text);
+                            } else if Ui.dialog == 3 {
+                                Backend.new-playlist-with(Ui.menu-list, Ui.menu-index, Ui.dialog-text);
+                            } else if Ui.dialog == 4 {
+                                Backend.delete-playlist();
+                            }
+                            Ui.dialog = 0;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 9: share the open playlist as a code, 10: import a shared code.
+    if Ui.dialog == 9 || Ui.dialog == 10: Rectangle {
+        background: #00000080;
+        TouchArea { }
+        Rectangle {
+            width: Math.min(560px, root.width - 32px);
+            height: share-layout.preferred-height;
+            border-radius: Theme.radius-xl;
+            background: Theme.surface-container-high;
+
+            share-layout := VerticalLayout {
+                padding: 24px;
+                spacing: 14px;
+                Text {
+                    text: Ui.dialog == 9 ? "Share “" + Backend.playlist-name + "”" : "Import shared playlist";
+                    font-size: 24px;
+                    overflow: elide;
+                    color: Theme.on-surface;
+                }
+                WrapText {
+                    text: Ui.dialog == 9 ? Backend.share-info
+                        : "Paste a playlist code (it starts with “trax1:”). Only YouTube and SoundCloud songs are shared, so YouTube or SoundCloud has to be switched on in Settings → Sources to play them.";
+                    color: Theme.on-surface-variant;
+                }
+                if Ui.dialog == 9 && Backend.share-code != "": TextEdit {
+                    height: 120px;
+                    read-only: true;
+                    wrap: char-wrap;
+                    font-size: 12px;
+                    text: Backend.share-code;
+                }
+                if Ui.dialog == 10: TextEdit {
+                    height: 120px;
+                    wrap: char-wrap;
+                    font-size: 12px;
+                    placeholder-text: "trax1:…";
+                    text <=> Ui.dialog-text;
+                    init => { self.focus(); }
+                }
+                if Ui.dialog == 10 && Backend.share-error != "": WrapText {
+                    text: Backend.share-error;
+                    color: Theme.error;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: end;
+                    M3Button {
+                        text: Ui.dialog == 9 ? "Close" : "Cancel";
+                        kind: 3;
+                        clicked => { Ui.dialog = 0; }
+                    }
+                    if Ui.dialog == 9 && Backend.share-code != "": M3Button {
+                        text: "Copy code";
+                        has-icon: true;
+                        icon: Icons.upload;
+                        clicked => { Backend.copy-share-code(); }
+                    }
+                    if Ui.dialog == 10: M3Button {
+                        text: "Import";
+                        has-icon: true;
+                        icon: Icons.download;
+                        enabled: Ui.dialog-text != "";
+                        clicked => {
+                            if Backend.import-playlist(Ui.dialog-text) {
+                                Ui.dialog = 0;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 5: edit track info, 6: edit playlist details.
+    if Ui.dialog == 5 || Ui.dialog == 6: Rectangle {
+        background: #00000080;
+        TouchArea { }
+        Rectangle {
+            width: Math.min(680px, root.width - 32px);
+            height: Math.min(edit-layout.preferred-height, root.height - 32px);
+            border-radius: Theme.radius-xl;
+            background: Theme.surface-container-high;
+
+            edit-layout := VerticalLayout {
+                padding: 24px;
+                spacing: 20px;
+                Text {
+                    text: Ui.dialog == 5 ? "Edit track info" : "Edit playlist details";
+                    font-size: 24px;
+                    color: Theme.on-surface;
+                }
+                HorizontalLayout {
+                    spacing: 20px;
+                    VerticalLayout {
+                        width: 180px;
+                        spacing: 8px;
+                        alignment: start;
+                        Rectangle {
+                            height: 180px;
+                            border-radius: Theme.radius-medium;
+                            clip: true;
+                            background: Theme.surface-container-highest;
+                            if Backend.edit-has-cover: Image {
+                                width: parent.width;
+                                height: parent.height;
+                                image-fit: cover;
+                                source: Backend.edit-cover;
+                            }
+                            if !Backend.edit-has-cover: LogoArt {
+                                width: parent.width;
+                                height: parent.height;
+                            }
+                            Rectangle {
+                                visible: cover-ta.has-hover;
+                                background: #00000080;
+                                Text {
+                                    text: "Choose artwork";
+                                    color: #ffffff;
+                                    font-weight: 600;
+                                }
+                            }
+                            cover-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { Backend.edit-pick-cover(); }
+                            }
+                        }
+                        // Stacked: side by side they are wider than the 180 px column.
+                        M3Button {
+                            text: "Choose image…";
+                            kind: 1;
+                            clicked => { Backend.edit-pick-cover(); }
+                        }
+                        if Ui.dialog == 5 && Backend.spotify-enabled: M3Button {
+                            text: "Find on Spotify…";
+                            kind: 2;
+                            clicked => {
+                                Backend.match-begin-track();
+                                Ui.dialog = 7;
+                            }
+                        }
+                        M3Button {
+                            text: "Remove image";
+                            kind: 3;
+                            enabled: Backend.edit-has-cover;
+                            clicked => { Backend.edit-clear-cover(); }
+                        }
+                    }
+                    VerticalLayout {
+                        spacing: 12px;
+                        alignment: start;
+                        if Ui.dialog == 5: FieldLabel { text: "Title"; }
+                        if Ui.dialog == 5: LineEdit {
+                            text <=> Backend.edit-title;
+                        }
+                        if Ui.dialog == 5: FieldLabel { text: "Artist"; }
+                        if Ui.dialog == 5: LineEdit {
+                            text <=> Backend.edit-artist;
+                        }
+                        if Ui.dialog == 5: FieldLabel { text: "Album"; }
+                        if Ui.dialog == 5: LineEdit {
+                            text <=> Backend.edit-album;
+                        }
+                        if Ui.dialog == 6: LineEdit {
+                            placeholder-text: "Name";
+                            text <=> Backend.edit-title;
+                        }
+                        if Ui.dialog == 6: TextEdit {
+                            height: 120px;
+                            placeholder-text: "Add an optional description";
+                            wrap: word-wrap;
+                            text <=> Backend.edit-description;
+                        }
+                    }
+                }
+                // Favourite section: playback starts and stops at these points.
+                if Ui.dialog == 5: Rectangle {
+                    border-radius: Theme.radius-medium;
+                    background: Theme.surface-container;
+                    height: sec-layout.preferred-height;
+                    sec-layout := VerticalLayout {
+                        padding: 16px;
+                        spacing: 10px;
+                        Text {
+                            text: "Favourite section (optional)";
+                            font-weight: 600;
+                            color: Theme.on-surface;
+                        }
+                        WrapText {
+                            text: "Only this part plays. Leave a field empty to start at the beginning or play to the end.";
+                            font-size: 12px;
+                            color: Theme.on-surface-variant;
+                        }
+                        HorizontalLayout {
+                            spacing: 16px;
+                            VerticalLayout {
+                                spacing: 4px;
+                                FieldLabel { text: "Start (m:ss)"; }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    LineEdit {
+                                        placeholder-text: "0:00";
+                                        text <=> Backend.edit-start;
+                                    }
+                                    if Backend.edit-is-current: M3Button {
+                                        y: (parent.height - self.height) / 2;
+                                        text: "Use current";
+                                        kind: 2;
+                                        clicked => { Backend.edit-section-from-position(true); }
+                                    }
+                                }
+                            }
+                            VerticalLayout {
+                                spacing: 4px;
+                                FieldLabel { text: "End (m:ss)"; }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    LineEdit {
+                                        placeholder-text: "end";
+                                        text <=> Backend.edit-end;
+                                    }
+                                    if Backend.edit-is-current: M3Button {
+                                        y: (parent.height - self.height) / 2;
+                                        text: "Use current";
+                                        kind: 2;
+                                        clicked => { Backend.edit-section-from-position(false); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if Ui.dialog == 5: WrapText {
+                    text: "Changes are stored in trax and included in exports. The audio file itself is not modified, and rescans keep your edits.";
+                    font-size: 12px;
+                    color: Theme.on-surface-variant;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: end;
+                    M3Button {
+                        text: "Cancel";
+                        kind: 3;
+                        clicked => { Ui.dialog = 0; }
+                    }
+                    M3Button {
+                        text: "Save";
+                        enabled: Backend.edit-title != "";
+                        clicked => {
+                            if Ui.dialog == 5 {
+                                Backend.edit-track-save();
+                            } else {
+                                Backend.edit-playlist-save();
+                            }
+                            Ui.dialog = 0;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 7: find on Spotify (artist match or track artwork).
+    if Ui.dialog == 7: Rectangle {
+        background: #00000080;
+        TouchArea { }
+        Rectangle {
+            width: 560px;
+            height: Math.min(root.height - 80px, match-layout.preferred-height);
+            border-radius: Theme.radius-xl;
+            background: Theme.surface-container-high;
+
+            match-layout := VerticalLayout {
+                padding: 24px;
+                spacing: 16px;
+                Text {
+                    text: Backend.match-kind == 0 ? "Which artist is this?" : "Find artwork on Spotify";
+                    font-size: 24px;
+                    color: Theme.on-surface;
+                }
+                WrapText {
+                    text: Backend.match-kind == 0
+                        ? "Pick the right Spotify artist. trax keeps your choice and uses it for the image, genres and info."
+                        : "Pick a match to use its album artwork for this track.";
+                    font-size: 12px;
+                    color: Theme.on-surface-variant;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    LineEdit {
+                        text <=> Backend.match-query;
+                        placeholder-text: "Search Spotify";
+                        accepted => { Backend.match-search(); }
+                    }
+                    M3Button {
+                        text: "Search";
+                        kind: 1;
+                        clicked => { Backend.match-search(); }
+                    }
+                }
+                if Backend.match-searching: HorizontalLayout {
+                    alignment: center;
+                    M3Spinner {
+                        width: 32px;
+                        height: 32px;
+                    }
+                }
+                if Backend.match-error != "": WrapText {
+                    text: Backend.match-error;
+                    color: Theme.error;
+                }
+                match-sv := ScrollView {
+                    height: Math.min(420px, Backend.match-results.length * 64px);
+                    content-width: self.visible-width;
+                    content-height: match-list.preferred-height;
+                    match-list := VerticalLayout {
+                        width: match-sv.visible-width;
+                        for m[i] in Backend.match-results: Rectangle {
+                            height: 64px;
+                            border-radius: Theme.radius-small;
+                            background: m-ta.has-hover ? Theme.on-surface.with-alpha(0.08) : transparent;
+                            m-ta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    Backend.match-pick(i);
+                                    Ui.dialog = Backend.match-kind == 1 ? 5 : 0;
+                                }
+                            }
+                            HorizontalLayout {
+                                padding: 8px;
+                                spacing: 12px;
+                                Rectangle {
+                                    width: 48px;
+                                    height: 48px;
+                                    border-radius: Backend.match-kind == 0 ? 24px : 6px;
+                                    clip: true;
+                                    background: Theme.surface-container-highest;
+                                    if m.has-image: Image {
+                                        width: parent.width;
+                                        height: parent.height;
+                                        source: m.image;
+                                        image-fit: cover;
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center;
+                                    spacing: 2px;
+                                    Text {
+                                        text: m.title;
+                                        overflow: elide;
+                                        font-weight: 600;
+                                        color: Theme.on-surface;
+                                    }
+                                    Text {
+                                        text: m.subtitle;
+                                        overflow: elide;
+                                        font-size: 12px;
+                                        color: Theme.on-surface-variant;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    alignment: end;
+                    M3Button {
+                        text: "Cancel";
+                        kind: 3;
+                        clicked => { Ui.dialog = Backend.match-kind == 1 ? 5 : 0; }
+                    }
+                }
+            }
+        }
+    }
+
+    // 8: edit artist image and bio.
+    if Ui.dialog == 8: Rectangle {
+        background: #00000080;
+        TouchArea { }
+        Rectangle {
+            width: 640px;
+            height: artist-edit.preferred-height;
+            border-radius: Theme.radius-xl;
+            background: Theme.surface-container-high;
+
+            artist-edit := VerticalLayout {
+                padding: 24px;
+                spacing: 20px;
+                Text {
+                    text: "Edit " + Backend.artist-name;
+                    font-size: 24px;
+                    overflow: elide;
+                    color: Theme.on-surface;
+                }
+                HorizontalLayout {
+                    spacing: 20px;
+                    VerticalLayout {
+                        width: 180px;
+                        spacing: 8px;
+                        alignment: start;
+                        Rectangle {
+                            height: 180px;
+                            border-radius: 90px;
+                            clip: true;
+                            background: Theme.surface-container-highest;
+                            if Backend.artist-has-image: Image {
+                                width: parent.width;
+                                height: parent.height;
+                                source: Backend.artist-image;
+                                image-fit: cover;
+                            }
+                            if !Backend.artist-has-image: Image {
+                                width: 64px;
+                                height: 64px;
+                                source: Icons.note;
+                                colorize: Theme.on-surface-variant;
+                            }
+                        }
+                        M3Button {
+                            text: "Choose image…";
+                            kind: 1;
+                            clicked => { Backend.artist-pick-image(); }
+                        }
+                        M3Button {
+                            text: "Remove image";
+                            kind: 3;
+                            enabled: Backend.artist-has-image;
+                            clicked => { Backend.artist-clear-image(); }
+                        }
+                    }
+                    VerticalLayout {
+                        spacing: 8px;
+                        Text {
+                            text: "About";
+                            font-weight: 600;
+                            color: Theme.on-surface;
+                        }
+                        TextEdit {
+                            height: 220px;
+                            wrap: word-wrap;
+                            placeholder-text: "Write something about this artist";
+                            text <=> Backend.artist-bio-edit;
+                        }
+                        WrapText {
+                            text: "Your own image and text are kept: automatic updates won't replace them. Remove the image or clear the text to let trax fill them in again.";
+                            font-size: 12px;
+                            color: Theme.on-surface-variant;
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: end;
+                    M3Button {
+                        text: "Cancel";
+                        kind: 3;
+                        clicked => { Ui.dialog = 0; }
+                    }
+                    M3Button {
+                        text: "Save";
+                        clicked => {
+                            Backend.artist-edit-save();
+                            Ui.dialog = 0;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Last, so messages show above open dialogs.
+    if Backend.toast != "": Rectangle {
+        x: (root.width - self.width) / 2;
+        y: root.height - 92px - self.height - 16px;
+        width: toast-text.preferred-width + 48px;
+        height: 48px;
+        border-radius: 8px;
+        background: Theme.inverse-surface;
+        drop-shadow-blur: Theme.low-end ? 0px : 12px;
+        drop-shadow-color: #00000050;
+        toast-text := Text {
+            text: Backend.toast;
+            color: Theme.inverse-on-surface;
+        }
+    }
+}

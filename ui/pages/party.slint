@@ -1,0 +1,372 @@
+import { ScrollView, LineEdit } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { Icons } from "../icons.slint";
+import { Backend, PartyPeer, PartyEntry } from "../backend.slint";
+import { M3Button, IconButton, Chip, WrapText, M3Spinner, SectionHeader } from "../widgets.slint";
+
+component Card inherits Rectangle {
+    in property <string> title;
+    in property <string> description;
+    border-radius: Theme.radius-large;
+    background: Theme.surface-container;
+    VerticalLayout {
+        padding: 20px;
+        spacing: 12px;
+        if root.title != "": Text {
+            text: root.title;
+            font-size: 16px;
+            font-weight: 600;
+            color: Theme.on-surface;
+        }
+        if root.description != "": WrapText {
+            text: root.description;
+            font-size: 12px;
+            color: Theme.on-surface-variant;
+        }
+        @children
+    }
+}
+
+component Badge inherits Rectangle {
+    in property <string> text;
+    in property <bool> strong: false;
+    height: 22px;
+    width: badge-text.preferred-width + 16px;
+    border-radius: 11px;
+    background: root.strong ? Theme.primary-container : Theme.surface-container-highest;
+    badge-text := Text {
+        text: root.text;
+        font-size: 11px;
+        font-weight: 600;
+        color: root.strong ? Theme.on-primary-container : Theme.on-surface-variant;
+    }
+}
+
+// One person in the party. The host can change what each guest may control.
+component PeerRow inherits Rectangle {
+    in property <PartyPeer> peer;
+    in property <bool> host-view;
+    min-height: 56px;
+    border-radius: Theme.radius-medium;
+    background: Theme.surface-container-high;
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+        HorizontalLayout {
+            spacing: 8px;
+            Rectangle {
+                width: 10px;
+                Rectangle {
+                    width: 10px;
+                    height: 10px;
+                    border-radius: 5px;
+                    background: root.peer.online ? #4caf50 : Theme.outline;
+                }
+            }
+            Text {
+                text: root.peer.name;
+                font-weight: 600;
+                overflow: elide;
+                vertical-alignment: center;
+                color: root.peer.online ? Theme.on-surface : Theme.on-surface-variant;
+            }
+            if root.peer.host: Badge { text: "Host"; strong: true; y: (parent.height - self.height) / 2; }
+            if root.peer.me: Badge { text: "You"; y: (parent.height - self.height) / 2; }
+            if !root.peer.online: Badge { text: "Offline"; y: (parent.height - self.height) / 2; }
+            Rectangle { horizontal-stretch: 1; }
+            if root.host-view && !root.peer.host: M3Button {
+                text: root.peer.skip && root.peer.seek && root.peer.pause && root.peer.add && root.peer.remove ? "Revoke all" : "Grant all";
+                kind: 3;
+                clicked => {
+                    Backend.party-grant-all(root.peer.id,
+                        !(root.peer.skip && root.peer.seek && root.peer.pause && root.peer.add && root.peer.remove));
+                }
+            }
+            if root.host-view && !root.peer.host: M3Button {
+                text: "Kick";
+                kind: 2;
+                clicked => { Backend.party-kick(root.peer.id); }
+            }
+        }
+        // What this person may control: toggles for the host, a read-only list for guests.
+        if !root.peer.host && root.host-view: HorizontalLayout {
+            spacing: 6px;
+            alignment: start;
+            Chip { text: "Skip"; selected: root.peer.skip; clicked => { Backend.party-set-cap(root.peer.id, "skip", !root.peer.skip); } }
+            Chip { text: "Seek"; selected: root.peer.seek; clicked => { Backend.party-set-cap(root.peer.id, "seek", !root.peer.seek); } }
+            Chip { text: "Pause"; selected: root.peer.pause; clicked => { Backend.party-set-cap(root.peer.id, "pause", !root.peer.pause); } }
+            Chip { text: "Add songs"; selected: root.peer.add; clicked => { Backend.party-set-cap(root.peer.id, "queue_add", !root.peer.add); } }
+            Chip { text: "Remove songs"; selected: root.peer.remove; clicked => { Backend.party-set-cap(root.peer.id, "queue_remove", !root.peer.remove); } }
+        }
+        if !root.peer.host && !root.host-view: Text {
+            text: root.peer.caps-text;
+            font-size: 12px;
+            color: Theme.on-surface-variant;
+        }
+    }
+}
+
+component QueueRow inherits Rectangle {
+    in property <PartyEntry> entry;
+    in property <int> index;
+    in property <bool> can-remove;
+    height: 56px;
+    border-radius: Theme.radius-small;
+    background: Theme.surface-container-high;
+    opacity: root.entry.pending ? 0.55 : 1;
+    HorizontalLayout {
+        padding-left: 12px;
+        padding-right: 8px;
+        spacing: 12px;
+        Text {
+            width: 24px;
+            text: root.index + 1;
+            vertical-alignment: center;
+            horizontal-alignment: right;
+            color: Theme.on-surface-variant;
+        }
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+            Text {
+                text: root.entry.title;
+                overflow: elide;
+                color: Theme.on-surface;
+            }
+            Text {
+                text: (root.entry.artist != "" ? root.entry.artist + " · " : "") + "Added by " + root.entry.added-by
+                    + (root.entry.pending ? " · waiting for the host…" : "") + (root.entry.playable ? "" : " · only the host can hear this");
+                overflow: elide;
+                font-size: 12px;
+                color: Theme.on-surface-variant;
+            }
+        }
+        if root.can-remove && root.entry.id != "" && !root.entry.pending: IconButton {
+            y: (parent.height - self.height) / 2;
+            icon: Icons.close;
+            tooltip: "Remove from the party queue";
+            clicked => { Backend.party-remove-entry(root.entry.id); }
+        }
+    }
+}
+
+export component PartyPage inherits Rectangle {
+    property <string> host-password;
+    property <string> join-code;
+    property <string> join-password;
+    // Connected (a guest still looking for the party only sees the status).
+    property <bool> in-room: Backend.party-mode == 1 || (Backend.party-mode == 2 && Backend.party-phase != "connecting");
+
+    sv := ScrollView {
+        content-width: self.visible-width;
+        content-height: content.preferred-height;
+
+        content := VerticalLayout {
+            width: sv.visible-width;
+            padding: 32px;
+            spacing: 16px;
+            alignment: start;
+
+            Text {
+                text: "Listening party";
+                font-size: 32px;
+                font-weight: 700;
+                color: Theme.on-surface;
+            }
+
+            // ---- not in a party
+            if Backend.party-mode == 0: WrapText {
+                text: "Listen together: the host plays, everyone hears the same song at the same moment. Guests need trax with YouTube or SoundCloud switched on; songs from someone's PC or Nextcloud can only be heard by them.";
+                color: Theme.on-surface-variant;
+            }
+
+            if Backend.party-mode == 0 && Backend.party-name == "": Card {
+                title: "Your name";
+                description: "Shown to everyone in the party. You can change it later in Settings → Sources.";
+                name-row := HorizontalLayout {
+                    spacing: 8px;
+                    name-edit := LineEdit {
+                        placeholder-text: "e.g. Alex";
+                        accepted => { Backend.party-name = self.text; Backend.party-save-settings(); }
+                    }
+                    M3Button {
+                        text: "Save";
+                        enabled: name-edit.text != "";
+                        clicked => { Backend.party-name = name-edit.text; Backend.party-save-settings(); }
+                    }
+                }
+            }
+
+            if Backend.party-mode == 0: HorizontalLayout {
+                spacing: 16px;
+                Card {
+                    horizontal-stretch: 1;
+                    title: "Host a party";
+                    description: "You get a room code to share. Guests follow your music; you decide what each of them may control.";
+                    LineEdit {
+                        placeholder-text: "Password (optional)";
+                        input-type: password;
+                        text <=> root.host-password;
+                    }
+                    HorizontalLayout {
+                        alignment: start;
+                        M3Button {
+                            text: "Create party";
+                            has-icon: true;
+                            icon: Icons.party;
+                            enabled: Backend.party-name != "";
+                            clicked => { Backend.party-create(root.host-password); }
+                        }
+                    }
+                }
+                Card {
+                    horizontal-stretch: 1;
+                    title: "Join a party";
+                    description: "Enter the room code you got from the host, and the password if there is one.";
+                    LineEdit {
+                        placeholder-text: "Room code, e.g. XYAS-KDHG-ASDF";
+                        text <=> root.join-code;
+                    }
+                    LineEdit {
+                        placeholder-text: "Password (if the party has one)";
+                        input-type: password;
+                        text <=> root.join-password;
+                        accepted => { Backend.party-join(root.join-code, root.join-password); }
+                    }
+                    HorizontalLayout {
+                        alignment: start;
+                        M3Button {
+                            text: "Join party";
+                            kind: 1;
+                            enabled: Backend.party-name != "" && root.join-code != "";
+                            clicked => { Backend.party-join(root.join-code, root.join-password); }
+                        }
+                    }
+                }
+            }
+
+            if Backend.party-error != "": WrapText {
+                text: Backend.party-error;
+                color: Theme.error;
+            }
+
+            // ---- in a party
+            if Backend.party-mode != 0: Card {
+                HorizontalLayout {
+                    spacing: 12px;
+                    if Backend.party-phase != "live": M3Spinner {
+                        width: 20px;
+                        height: 20px;
+                        y: (parent.height - self.height) / 2;
+                    }
+                    WrapText {
+                        horizontal-stretch: 1;
+                        text: Backend.party-status;
+                        color: Theme.on-surface;
+                    }
+                    M3Button {
+                        text: Backend.party-mode == 1 ? "End party" : "Leave party";
+                        kind: 2;
+                        clicked => { Backend.party-leave(); }
+                    }
+                }
+                if Backend.party-mode == 1: HorizontalLayout {
+                    spacing: 12px;
+                    alignment: start;
+                    Text {
+                        text: Backend.party-code;
+                        font-size: 28px;
+                        font-weight: 700;
+                        letter-spacing: 2px;
+                        vertical-alignment: center;
+                        color: Theme.primary;
+                    }
+                    M3Button {
+                        y: (parent.height - self.height) / 2;
+                        text: "Copy code";
+                        kind: 1;
+                        clicked => { Backend.party-copy-code(); }
+                    }
+                    if Backend.party-has-password: Badge {
+                        y: (parent.height - self.height) / 2;
+                        text: "Password protected";
+                    }
+                }
+            }
+
+            if root.in-room: Card {
+                title: "Now playing";
+                Text {
+                    text: Backend.party-now-title == "" ? "Nothing playing" : Backend.party-now-title;
+                    font-size: 18px;
+                    font-weight: 600;
+                    overflow: elide;
+                    color: Theme.on-surface;
+                }
+                if Backend.party-now-artist != "": Text {
+                    text: Backend.party-now-artist;
+                    color: Theme.on-surface-variant;
+                }
+                if Backend.party-unavailable != "": WrapText {
+                    text: Backend.party-unavailable + " You stay in sync and hear the next song that's available.";
+                    color: Theme.error;
+                }
+                if Backend.party-notice != "": WrapText {
+                    text: Backend.party-notice;
+                    color: Theme.tertiary;
+                }
+                if Backend.party-mode == 2: HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    M3Button {
+                        text: Backend.party-pause-pending ? "Waiting…" : (Backend.playing ? "Pause" : "Play");
+                        kind: 1;
+                        enabled: Backend.party-can-pause && !Backend.party-pause-pending;
+                        clicked => { Backend.play-pause(); }
+                    }
+                    M3Button {
+                        text: Backend.party-skip-pending ? "Skipping…" : "Skip";
+                        kind: 1;
+                        has-icon: true;
+                        icon: Icons.next;
+                        enabled: Backend.party-can-skip && !Backend.party-skip-pending;
+                        clicked => { Backend.next(); }
+                    }
+                }
+                if Backend.party-mode == 2 && !(Backend.party-can-skip || Backend.party-can-pause || Backend.party-can-seek || Backend.party-can-add || Backend.party-can-remove): Text {
+                    text: "The host controls the music. They can give you permission to skip, pause or add songs.";
+                    font-size: 12px;
+                    color: Theme.on-surface-variant;
+                }
+                if Backend.party-mode == 2 && Backend.party-can-add: Text {
+                    text: "Add songs with ⋮ → Add to queue on any YouTube or SoundCloud song (Search).";
+                    font-size: 12px;
+                    color: Theme.on-surface-variant;
+                }
+            }
+
+            if root.in-room: SectionHeader { text: "People (" + Backend.party-peers.length + ")"; }
+            if root.in-room: VerticalLayout {
+                spacing: 8px;
+                for p in Backend.party-peers: PeerRow {
+                    peer: p;
+                    host-view: Backend.party-mode == 1;
+                }
+            }
+
+            if root.in-room: SectionHeader { text: "Up next"; }
+            if root.in-room && Backend.party-queue.length == 0: Text {
+                text: "The queue is empty.";
+                color: Theme.on-surface-variant;
+            }
+            if root.in-room: VerticalLayout {
+                spacing: 4px;
+                for e[i] in Backend.party-queue: QueueRow {
+                    entry: e;
+                    index: i;
+                    can-remove: Backend.party-mode == 1 || Backend.party-can-remove;
+                }
+            }
+        }
+    }
+}

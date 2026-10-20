@@ -1,0 +1,309 @@
+import { ScrollView } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { Icons } from "../icons.slint";
+import { Backend } from "../backend.slint";
+import { Ui } from "../ui_state.slint";
+import { TrackRow, M3Button, IconButton, SectionHeader, Chip, M3Spinner } from "../widgets.slint";
+
+// Artist profile: image, Spotify details, Wikipedia bio, albums and tracks in the library.
+export component ArtistPage inherits Rectangle {
+    property <length> gap: 16px;
+    property <int> cols: Math.max(2, Math.floor((sv.visible-width - 64px + root.gap) / (170px + root.gap)));
+    property <length> card-w: (sv.visible-width - 64px - (root.cols - 1) * root.gap) / root.cols;
+    property <bool> bio-expanded: false;
+    // Not enough room for labelled secondary buttons: show them as icons.
+    property <bool> narrow: sv.visible-width < 820px;
+    // Height of the bio before "Show more" (about six lines).
+    property <length> bio-collapsed: 108px;
+
+    sv := ScrollView {
+        content-width: self.visible-width;
+        content-height: content.preferred-height;
+
+        content := VerticalLayout {
+            width: sv.visible-width;
+            alignment: start;
+
+            // Hero header with the artist image.
+            Rectangle {
+                height: 300px;
+                clip: true;
+                background: Theme.surface-container-high;
+                if Backend.artist-has-image: Image {
+                    width: parent.width;
+                    height: parent.height;
+                    source: Backend.artist-image;
+                    image-fit: cover;
+                }
+                Rectangle {
+                    background: @linear-gradient(180deg, #00000000 30%, #000000c0 100%);
+                }
+                if !Backend.artist-has-image: Image {
+                    x: parent.width - self.width - 48px;
+                    y: (parent.height - self.height) / 2;
+                    width: 180px;
+                    height: 180px;
+                    source: Icons.note;
+                    colorize: Theme.on-surface-variant.with-alpha(0.3);
+                }
+                VerticalLayout {
+                    padding: 32px;
+                    spacing: 6px;
+                    alignment: end;
+                    Text {
+                        text: "ARTIST";
+                        font-size: 12px;
+                        font-weight: 700;
+                        letter-spacing: 1px;
+                        color: #ffffffcc;
+                    }
+                    Text {
+                        text: Backend.artist-name;
+                        font-size: 56px;
+                        font-weight: 800;
+                        overflow: elide;
+                        color: #ffffff;
+                    }
+                    if Backend.artist-genres != "" || Backend.artist-followers != "": Text {
+                        text: Backend.artist-genres + (Backend.artist-genres != "" && Backend.artist-followers != "" ? "  ·  " : "") + Backend.artist-followers;
+                        overflow: elide;
+                        color: #ffffffcc;
+                    }
+                    // Spotify's terms ask for attribution and a link back (the "Open in Spotify" button).
+                    if Backend.artist-url != "": Text {
+                        text: "Artist info from Spotify";
+                        font-size: 11px;
+                        color: #ffffffaa;
+                    }
+                }
+                if Backend.artist-loading: M3Spinner {
+                    x: parent.width - 48px;
+                    y: 16px;
+                    width: 28px;
+                    height: 28px;
+                }
+            }
+
+            VerticalLayout {
+                padding: 32px;
+                spacing: 20px;
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: start;
+                    M3Button {
+                        text: "Play";
+                        has-icon: true;
+                        icon: Icons.play;
+                        enabled: Backend.artist-tracks.length > 0;
+                        clicked => { Backend.play-all("artist", false); }
+                    }
+                    M3Button {
+                        text: "Shuffle";
+                        kind: 1;
+                        has-icon: true;
+                        icon: Icons.shuffle;
+                        enabled: Backend.artist-tracks.length > 0;
+                        clicked => { Backend.play-all("artist", true); }
+                    }
+                    IconButton {
+                        icon: Icons.edit;
+                        tooltip: "Edit image and bio";
+                        clicked => {
+                            Backend.artist-edit-begin();
+                            Ui.dialog = 8;
+                        }
+                    }
+                    if Backend.spotify-enabled && root.narrow: IconButton {
+                        icon: Icons.refresh;
+                        enabled: !Backend.artist-loading;
+                        clicked => { Backend.artist-refresh(); }
+                    }
+                    if Backend.spotify-enabled && root.narrow: IconButton {
+                        icon: Icons.search;
+                        clicked => {
+                            Backend.match-begin-artist();
+                            Ui.dialog = 7;
+                        }
+                    }
+                    if Backend.artist-url != "" && root.narrow: IconButton {
+                        icon: Icons.open;
+                        clicked => { Backend.open-url(Backend.artist-url); }
+                    }
+                    if Backend.spotify-enabled && !root.narrow: M3Button {
+                        text: "Update info";
+                        kind: 2;
+                        has-icon: true;
+                        icon: Icons.refresh;
+                        enabled: !Backend.artist-loading;
+                        clicked => { Backend.artist-refresh(); }
+                    }
+                    if Backend.spotify-enabled && !root.narrow: M3Button {
+                        text: Backend.artist-matched ? "Wrong artist? Fix match" : "Find on Spotify";
+                        kind: 3;
+                        has-icon: true;
+                        icon: Icons.search;
+                        clicked => {
+                            Backend.match-begin-artist();
+                            Ui.dialog = 7;
+                        }
+                    }
+                    if Backend.artist-url != "" && !root.narrow: M3Button {
+                        text: "Open in Spotify";
+                        kind: 3;
+                        has-icon: true;
+                        icon: Icons.open;
+                        clicked => { Backend.open-url(Backend.artist-url); }
+                    }
+                }
+
+                Text {
+                    text: Backend.artist-stats;
+                    color: Theme.on-surface-variant;
+                }
+
+                if Backend.artist-bio != "": VerticalLayout {
+                    spacing: 8px;
+                    SectionHeader { text: "About"; }
+                    Rectangle {
+                        border-radius: Theme.radius-large;
+                        background: Theme.surface-container;
+                        // Full height of the bio at the current width, to know whether it is cut off.
+                        bio-measure := Text {
+                            visible: false;
+                            width: bio.width;
+                            text: Backend.artist-bio;
+                            wrap: word-wrap;
+                        }
+                        VerticalLayout {
+                            padding: 20px;
+                            spacing: 8px;
+                            bio := Text {
+                                text: Backend.artist-bio;
+                                wrap: word-wrap;
+                                // Explicit height: layouts would otherwise count wrapped text as one line.
+                                height: root.bio-expanded ? bio-measure.preferred-height : Math.min(bio-measure.preferred-height, root.bio-collapsed);
+                                overflow: elide;
+                                color: Theme.on-surface;
+                            }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                alignment: start;
+                                if root.bio-expanded || bio-measure.preferred-height > root.bio-collapsed: M3Button {
+                                    text: root.bio-expanded ? "Show less" : "Show more";
+                                    kind: 3;
+                                    clicked => { root.bio-expanded = !root.bio-expanded; }
+                                }
+                                if Backend.artist-bio-url != "": M3Button {
+                                    text: "Wikipedia";
+                                    kind: 3;
+                                    has-icon: true;
+                                    icon: Icons.open;
+                                    clicked => { Backend.open-url(Backend.artist-bio-url); }
+                                }
+                            }
+                            // Wikipedia text is licensed CC BY-SA 4.0: name the source and the license.
+                            if Backend.artist-bio-url != "": HorizontalLayout {
+                                spacing: 4px;
+                                alignment: start;
+                                Text {
+                                    text: "Text from Wikipedia, licensed under";
+                                    font-size: 11px;
+                                    vertical-alignment: center;
+                                    color: Theme.on-surface-variant;
+                                }
+                                license-link := Text {
+                                    text: "CC BY-SA 4.0";
+                                    font-size: 11px;
+                                    vertical-alignment: center;
+                                    color: Theme.primary;
+                                    TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { Backend.open-url("https://creativecommons.org/licenses/by-sa/4.0/"); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if Backend.artist-albums.length > 0: SectionHeader { text: "Albums"; }
+
+                if Backend.artist-albums.length > 0: Rectangle {
+                    height: Math.ceil(Backend.artist-albums.length / root.cols) * (root.card-w + 64px + root.gap);
+                    for a[i] in Backend.artist-albums: Rectangle {
+                        x: Math.mod(i, root.cols) * (root.card-w + root.gap);
+                        y: Math.floor(i / root.cols) * (root.card-w + 64px + root.gap);
+                        width: root.card-w;
+                        height: root.card-w + 64px;
+                        border-radius: Theme.radius-medium;
+                        background: album-ta.has-hover ? Theme.surface-container-high : transparent;
+                        album-ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { Backend.play-album(i); }
+                        }
+                        VerticalLayout {
+                            padding: 8px;
+                            spacing: 6px;
+                            Rectangle {
+                                height: self.width;
+                                border-radius: Theme.radius-small;
+                                clip: true;
+                                background: Theme.surface-container-highest;
+                                if a.has-cover: Image {
+                                    width: parent.width;
+                                    height: parent.height;
+                                    source: a.cover;
+                                    image-fit: cover;
+                                }
+                                if !a.has-cover: Image {
+                                    width: parent.width * 0.35;
+                                    height: parent.height * 0.35;
+                                    source: Icons.note;
+                                    colorize: Theme.on-surface-variant;
+                                }
+                                if album-ta.has-hover: IconButton {
+                                    x: parent.width - self.width - 8px;
+                                    y: parent.height - self.height - 8px;
+                                    size: 40px;
+                                    filled: true;
+                                    icon: Icons.play;
+                                    clicked => { Backend.play-album(i); }
+                                }
+                            }
+                            Text {
+                                text: a.name;
+                                overflow: elide;
+                                font-weight: 600;
+                                color: Theme.on-surface;
+                            }
+                            Text {
+                                text: a.subtitle;
+                                overflow: elide;
+                                font-size: 12px;
+                                color: Theme.on-surface-variant;
+                            }
+                        }
+                    }
+                }
+
+                SectionHeader { text: "Tracks"; }
+
+                if Backend.artist-tracks.length == 0: Text {
+                    text: "No tracks by this artist in your library yet.";
+                    color: Theme.on-surface-variant;
+                }
+
+                VerticalLayout {
+                    for t[i] in Backend.artist-tracks: TrackRow {
+                        track: t;
+                        index: i;
+                        list: "artist";
+                        play => { Backend.play-from("artist", i); }
+                        menu(x, y) => { Ui.open-menu("artist", i, x, y); }
+                    }
+                }
+            }
+        }
+    }
+}

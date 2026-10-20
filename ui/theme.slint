@@ -1,0 +1,49 @@
+// Material 3 colour roles plus the user's layout preferences. The defaults below are the
+// baseline purple scheme; Rust overrides every colour when an accent or custom theme is set.
+
+export global Theme {
+    in-out property <bool> dark: true;
+
+    in-out property <color> surface: root.dark ? #141218 : #fef7ff;
+    in-out property <color> surface-dim: root.dark ? #141218 : #ded8e1;
+    in-out property <color> surface-container-lowest: root.dark ? #0f0d13 : #ffffff;
+    in-out property <color> surface-container-low: root.dark ? #1d1b20 : #f7f2fa;
+    in-out property <color> surface-container: root.dark ? #211f26 : #f3edf7;
+    in-out property <color> surface-container-high: root.dark ? #2b2930 : #ece6f0;
+    in-out property <color> surface-container-highest: root.dark ? #36343b : #e6e0e9;
+    in-out property <color> on-surface: root.dark ? #e6e0e9 : #1d1b20;
+    in-out property <color> on-surface-variant: root.dark ? #cac4d0 : #49454f;
+    in-out property <color> outline: root.dark ? #938f99 : #79747e;
+    in-out property <color> outline-variant: root.dark ? #49454f : #cac4d0;
+    in-out property <color> primary: root.dark ? #d0bcff : #6750a4;
+    in-out property <color> on-primary: root.dark ? #381e72 : #ffffff;
+    in-out property <color> primary-container: root.dark ? #4f378b : #eaddff;
+    in-out property <color> on-primary-container: root.dark ? #eaddff : #21005d;
+    in-out property <color> secondary-container: root.dark ? #4a4458 : #e8def8;
+    in-out property <color> on-secondary-container: root.dark ? #e8def8 : #1d192b;
+    in-out property <color> tertiary: root.dark ? #efb8c8 : #7d5260;
+    in-out property <color> tertiary-container: root.dark ? #633b48 : #ffd8e4;
+    in-out property <color> on-tertiary-container: root.dark ? #ffd8e4 : #31111d;
+    in-out property <color> error: root.dark ? #f2b8b5 : #b3261e;
+    in-out property <color> inverse-surface: root.dark ? #e6e0e9 : #322f35;
+    in-out property <color> inverse-on-surface: root.dark ? #322f35 : #f5eff7;
+    out property <color> scrim: #000000;
+
+    // ---- shape: 0 = square corners, 1 = Material default, 2 = extra round
+    in-out property <float> corner-scale: 1;
+    out property <length> radius-small: 8px * root.corner-scale;
+    out property <length> radius-medium: 12px * root.corner-scale;
+    out property <length> radius-large: 16px * root.corner-scale;
+    out property <length> radius-xl: 28px * root.corner-scale;
+    // Pill shapes (buttons, navigation items) never get rounder than a full pill.
+    out property <float> pill: Math.min(root.corner-scale, 1);
+
+    // ---- layout preferences
+    in-out property <length> row-height: 56px;
+    in-out property <bool> show-album: true;
+    in-out property <bool> show-source: true;
+    in-out property <bool> show-covers: true;
+    in-out property <string> font-family: "";
+    // Low-end mode: no animations, shadows or per-frame effects.
+    in-out property <bool> low-end: false;
+}

@@ -1,0 +1,126 @@
+// Mini player that pops up next to the system tray icon.
+
+import { Theme } from "theme.slint";
+import { Icons } from "icons.slint";
+import { IconButton, M3Slider, Cover } from "widgets.slint";
+
+export global TrayState {
+    in property <string> title: "Nothing playing";
+    in property <string> artist;
+    in property <image> cover;
+    in property <bool> has-cover: false;
+    in property <bool> playing: false;
+    in property <bool> has-track: false;
+    in property <float> volume: 0.7;
+    in property <bool> muted: false;
+    callback play-pause();
+    callback next();
+    callback previous();
+    callback set-volume(float);
+    callback toggle-mute();
+    callback show-app();
+}
+
+export component TrayPopup inherits Window {
+    title: "trax mini player";
+    no-frame: true;
+    always-on-top: true;
+    width: 360px;
+    height: 148px;
+    background: Theme.surface-container-high;
+    out property <bool> hovered: hover.has-hover;
+
+    hover := TouchArea { }
+
+    Rectangle {
+        border-width: 1px;
+        border-color: Theme.outline-variant;
+    }
+
+    VerticalLayout {
+        padding: 14px;
+        spacing: 10px;
+        HorizontalLayout {
+            spacing: 12px;
+            Cover {
+                width: 64px;
+                height: 64px;
+                source: TrayState.cover;
+                has-image: TrayState.has-cover;
+                TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { TrayState.show-app(); }
+                }
+            }
+            VerticalLayout {
+                alignment: center;
+                spacing: 2px;
+                Text {
+                    text: TrayState.title;
+                    font-size: 14px;
+                    font-weight: 600;
+                    overflow: elide;
+                    color: Theme.on-surface;
+                }
+                Text {
+                    text: TrayState.artist;
+                    font-size: 12px;
+                    overflow: elide;
+                    color: Theme.on-surface-variant;
+                }
+                HorizontalLayout {
+                    spacing: 4px;
+                    alignment: start;
+                    IconButton {
+                        icon: Icons.prev;
+                        size: 36px;
+                        enabled: TrayState.has-track;
+                        clicked => { TrayState.previous(); }
+                    }
+                    IconButton {
+                        icon: TrayState.playing ? Icons.pause : Icons.play;
+                        size: 36px;
+                        filled: true;
+                        enabled: TrayState.has-track;
+                        clicked => { TrayState.play-pause(); }
+                    }
+                    IconButton {
+                        icon: Icons.next;
+                        size: 36px;
+                        enabled: TrayState.has-track;
+                        clicked => { TrayState.next(); }
+                    }
+                }
+            }
+            IconButton {
+                icon: Icons.open;
+                size: 32px;
+                icon-size: 18px;
+                clicked => { TrayState.show-app(); }
+            }
+        }
+        HorizontalLayout {
+            spacing: 8px;
+            IconButton {
+                icon: TrayState.muted || TrayState.volume == 0 ? Icons.volume-off : Icons.volume;
+                size: 32px;
+                icon-size: 18px;
+                clicked => { TrayState.toggle-mute(); }
+            }
+            M3Slider {
+                value: TrayState.muted ? 0 : TrayState.volume;
+                wheel-step: 0.05;
+                changed(v) => { TrayState.set-volume(v); }
+                released(v) => { TrayState.set-volume(v); }
+            }
+            Text {
+                width: 36px;
+                text: "\{Math.round((TrayState.muted ? 0 : TrayState.volume) * 100)}%";
+                vertical-alignment: center;
+                horizontal-alignment: right;
+                font-size: 12px;
+                color: Theme.on-surface-variant;
+            }
+        }
+    }
+}
