@@ -18,8 +18,10 @@ use webrtc::peer_connection::{
     RTCIceServer, RTCPeerConnectionState, RTCSessionDescription,
 };
 
-/// Public STUN servers; TURN comes from settings.
-const STUN: &[&str] = &["stun:stun.cloudflare.com:3478", "stun:stun.l.google.com:19302"];
+/// Public STUN servers; TURN comes from settings. Three, from three operators: a DNS
+/// blocker that swallows one of the names (they are on tracker lists) leaves the others.
+const STUN: &[&str] =
+    &["stun:stun.cloudflare.com:3478", "stun:stun.l.google.com:19302", "stun:stun.nextcloud.com:443"];
 /// No DataChannel within this time: the network blocks a direct connection.
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 /// A guest sends `join` this often until the host answers, and gives up after this long.
@@ -53,6 +55,9 @@ pub enum Failure {
     NotFound,
     /// Found the other side but no direct connection (strict NAT without TURN).
     CantConnect,
+    /// The connection never got as far as trying: bad offer/answer, or TURN details that
+    /// WebRTC refuses. Nothing to do with NAT.
+    SetupFailed,
     /// The host stayed away after all reconnect attempts.
     HostGone,
 }
@@ -64,7 +69,10 @@ impl Failure {
             Failure::WrongPassword => "Wrong password",
             Failure::NotFound => "No party with this code found",
             Failure::CantConnect => {
-                "Can't connect: your network or the host's blocks direct connections (strict NAT). Add a TURN server in Settings → Party."
+                "Can't connect: your network or the host's blocks direct connections (strict NAT). In Settings → Party, run “Check my network” — if your side is fine, the host's network is the strict one and they need a TURN server. With a TURN server filled in, run “Test TURN server” too: one that refuses or can't be reached is the same as none at all."
+            }
+            Failure::SetupFailed => {
+                "Couldn't set up the connection. If you filled in a TURN server in Settings → Party, check its address, user and password — a wrong one stops the party before it starts."
             }
             Failure::HostGone => "Host disconnected — the party has ended",
         }
@@ -535,26 +543,33 @@ async fn guest_attempt(
             cmd = commands.recv() => if matches!(cmd, Some(Command::Shutdown) | None) { return Attempt::Shutdown },
         }
     };
+    // Everything up to here is negotiation: a failure means bad data or bad settings, not a
+    // network that can't be crossed.
     let Some(offer) = serde_json::from_str::<RTCSessionDescription>(&offer).ok() else {
-        return Attempt::Failed(Failure::CantConnect);
+        log::warn!("party: the host's offer could not be read");
+        return Attempt::Failed(Failure::SetupFailed);
     };
-    let Ok((pc, mut pc_events)) = new_connection(identity, &config.turn).await else {
-        return Attempt::Failed(Failure::CantConnect);
+    let (pc, mut pc_events) = match new_connection(identity, &config.turn).await {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("party: can't create connection (check the TURN settings): {e:#}");
+            return Attempt::Failed(Failure::SetupFailed);
+        }
     };
     let fail = |pc: Arc<dyn PeerConnection>, f: Failure| async move {
         let _ = pc.close().await;
         Attempt::Failed(f)
     };
     if pc.set_remote_description(offer).await.is_err() {
-        return fail(pc, Failure::CantConnect).await;
+        return fail(pc, Failure::SetupFailed).await;
     }
-    let Ok(answer) = pc.create_answer(None).await else { return fail(pc, Failure::CantConnect).await };
+    let Ok(answer) = pc.create_answer(None).await else { return fail(pc, Failure::SetupFailed).await };
     if pc.set_local_description(answer).await.is_err() {
-        return fail(pc, Failure::CantConnect).await;
+        return fail(pc, Failure::SetupFailed).await;
     }
     let mut channel = None;
     let Some(sdp) = gathered_description(&pc, &mut pc_events, &mut channel).await else {
-        return fail(pc, Failure::CantConnect).await;
+        return fail(pc, Failure::SetupFailed).await;
     };
     signaling.send(&Envelope::new("answer", &me, &host_id, &sdp));
 

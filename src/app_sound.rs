@@ -4,9 +4,11 @@
 use super::{App, s};
 use crate::connectors::cache;
 use crate::fx::FxParams;
+use crate::loudness;
 use crate::model::{Track, format_duration};
 use rustfft::num_complex::Complex32;
 use slint::{ComponentHandle, Model};
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// Effect presets: (name, settings). Settings not listed are reset to neutral first.
@@ -442,24 +444,130 @@ impl App {
     /// Enforce the cache limit in the background and refresh the usage text.
     pub(super) fn trim_cache(&self) {
         let limit = self.cache_limit_bytes();
+        let keep = self.offline_pins();
         std::thread::spawn(move || {
-            let removed = cache::enforce(limit);
+            let removed = cache::enforce(limit, &keep);
             if removed > 0 {
                 log::info!("cache: removed {removed} least recently played files");
             }
-            let (bytes, files) = cache::usage();
-            super::post(move |a| a.show_cache_usage(bytes, files));
+            let (bytes, files, pinned) = cache::usage(&keep);
+            super::post(move |a| a.show_cache_usage(bytes, files, pinned));
         });
     }
 
-    fn show_cache_usage(&self, bytes: u64, files: usize) {
+    fn show_cache_usage(&self, bytes: u64, files: usize, pinned: u64) {
         let limit = self.cache_limit_bytes();
-        let text = if limit == 0 {
+        let mut text = if limit == 0 {
             format!("Using {} for {files} songs (no limit)", cache::format_size(bytes))
         } else {
             format!("Using {} of {} for {files} songs", cache::format_size(bytes), cache::format_size(limit))
         };
+        if pinned > 0 {
+            text += &format!(" · {} kept offline (not counted)", cache::format_size(pinned));
+        }
         self.backend().set_cache_usage(s(text));
+    }
+
+    // ------------------------------------------------------------------ volume normalization
+
+    /// Playback gain for a track: brings a measured song to the common target level.
+    /// 1.0 when normalization is off or the song has not been measured yet.
+    pub(super) fn track_gain(&self, t: &Track) -> f32 {
+        if !self.backend().get_normalize_enabled() {
+            return 1.0;
+        }
+        match self.db.lock().unwrap().loudness(t.source.as_str(), &t.uri) {
+            Some(lufs) => loudness::gain_for(lufs),
+            None => 1.0,
+        }
+    }
+
+    /// Measure a track's loudness in the background unless that was done before. Decoding a
+    /// song takes a moment, so the first play of a new song may start unadjusted.
+    pub(super) fn ensure_loudness(&self, t: &Track, path: PathBuf) {
+        if !self.backend().get_normalize_enabled() {
+            return;
+        }
+        let (source, uri) = (t.source.as_str().to_string(), t.uri.clone());
+        let busy_key = format!("{source}:{uri}");
+        if self.db.lock().unwrap().loudness(&source, &uri).is_some() {
+            return;
+        }
+        if !self.loudness_busy.lock().unwrap().insert(busy_key.clone()) {
+            return;
+        }
+        let db = self.db.clone();
+        let busy = self.loudness_busy.clone();
+        std::thread::spawn(move || {
+            let measured = loudness::analyze(&path);
+            busy.lock().unwrap().remove(&busy_key);
+            match measured {
+                Ok(lufs) => {
+                    log::info!("loudness of {uri}: {lufs:.1} LUFS");
+                    db.lock().unwrap().set_loudness(&source, &uri, lufs);
+                    super::post(move |a| a.on_loudness(source, uri, lufs));
+                }
+                Err(e) => log::info!("cannot measure {uri}: {e:#}"),
+            }
+        });
+    }
+
+    /// A measurement finished: use it right away when it belongs to the song that is playing
+    /// and it is still near the start, so the level does not jump halfway through a song.
+    fn on_loudness(&mut self, source: String, uri: String, lufs: f32) {
+        let current = self.queue.current().map(|t| (t.source.as_str() == source, t.uri == uri));
+        if current != Some((true, true)) || !self.backend().get_normalize_enabled() {
+            return;
+        }
+        let early = self.audio.as_ref().map(|a| a.position() < Duration::from_secs(20)).unwrap_or(false);
+        if early {
+            if let Some(audio) = &mut self.audio {
+                audio.set_gain(loudness::gain_for(lufs));
+            }
+        }
+        self.update_normalize_info();
+    }
+
+    pub(super) fn set_normalize(&mut self, on: bool) {
+        self.backend().set_normalize_enabled(on);
+        self.db.lock().unwrap().set_setting_bool("normalize", on);
+        // Apply to the song that is playing instead of waiting for the next one.
+        let current = self.queue.current().cloned();
+        let gain = match (&current, on) {
+            (Some(t), true) => self.track_gain(t),
+            _ => 1.0,
+        };
+        if let Some(audio) = &mut self.audio {
+            audio.set_gain(gain);
+        }
+        if let Some(t) = current {
+            if let Some(path) = super::ready_file(&t) {
+                self.ensure_loudness(&t, path);
+            }
+        }
+        self.update_normalize_info();
+    }
+
+    /// The line under the setting: what is being done to the song that is playing.
+    pub(super) fn update_normalize_info(&self) {
+        let b = self.backend();
+        if !b.get_normalize_enabled() {
+            b.set_normalize_info(s(""));
+            return;
+        }
+        let Some(t) = self.queue.current() else {
+            b.set_normalize_info(s(format!("Everything plays at {:.0} LUFS.", loudness::TARGET_LUFS)));
+            return;
+        };
+        let measured = self.db.lock().unwrap().loudness(t.source.as_str(), &t.uri);
+        let text = match measured {
+            Some(lufs) => {
+                let db_change = 20.0 * loudness::gain_for(lufs).log10();
+                format!("“{}”: {lufs:.1} LUFS, played {db_change:+.1} dB.", t.title)
+            }
+            None => format!("Measuring “{}”…", t.title),
+        };
+        b.set_normalize_info(s(text));
     }
 }
 

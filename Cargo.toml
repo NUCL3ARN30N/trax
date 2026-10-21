@@ -1,6 +1,6 @@
 [package]
 name = "trax"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 authors = ["NUCL3ARN30N"]
 description = "Material Design music player for local, Nextcloud, YouTube and SoundCloud music"
@@ -21,9 +21,11 @@ env_logger = "0.11.11"
 flate2 = "1.1.10"
 futures-util = "0.3.34"
 hkdf = "0.13.0"
+hmac = "0.13.0"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png"] }
 lofty = "0.25.4"
 log = "0.4.34"
+md-5 = "0.10.6"
 nostr = { version = "0.45.5", features = ["os-rng"] }
 percent-encoding = "2.3.2"
 pitch_shift = "2.1.0"
@@ -39,6 +41,7 @@ rustfft = "6.4.1"
 rustls = { version = "0.23", default-features = false, features = ["aws_lc_rs"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
+sha1 = "0.11.0"
 sha2 = "0.11.1"
 slint = { version = "1.18.1", features = ["raw-window-handle-06", "unstable-winit-030"] }
 souvlaki = "0.8.3"

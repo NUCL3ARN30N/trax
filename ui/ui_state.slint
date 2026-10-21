@@ -9,12 +9,16 @@ export global Ui {
     in-out property <int> menu-serial: 0;
 
     // Dialogs: 0 none, 1 new playlist, 2 rename playlist, 3 new playlist with track, 4 delete playlist,
-    // 5 edit track, 6 edit playlist, 7 find on Spotify, 8 edit artist, 9 share playlist, 10 import shared playlist
+    // 5 edit track, 6 edit playlist, 7 find on Spotify, 8 edit artist, 9 share playlist, 10 import shared playlist,
+    // 11 clear audio cache
     in-out property <int> dialog: 0;
     in-out property <string> dialog-text;
 
     in-out property <bool> show-queue: false;
     in-out property <bool> show-eq: false;
+    // Lyrics beside the song list, and over the fullscreen player.
+    in-out property <bool> show-lyrics: false;
+    in-out property <bool> fs-lyrics: false;
 
     public function open-menu(list: string, index: int, x: length, y: length) {
         self.menu-list = list;

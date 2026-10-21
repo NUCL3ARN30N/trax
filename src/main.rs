@@ -10,6 +10,8 @@ mod db;
 mod eq;
 mod fx;
 mod instance;
+mod loudness;
+mod lyrics;
 mod media_keys;
 mod model;
 mod party;

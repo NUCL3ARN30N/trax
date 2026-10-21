@@ -11,10 +11,11 @@ import { PlaylistPage } from "pages/playlist.slint";
 import { SettingsPage } from "pages/settings.slint";
 import { ArtistPage } from "pages/artist.slint";
 import { PartyPage } from "pages/party.slint";
-import { PlayerBar, QueuePanel, EqPanel, FullscreenView } from "player.slint";
+import { PlayerBar, QueuePanel, LyricsPanel, EqPanel, FullscreenView } from "player.slint";
 import { TrayPopup, TrayState } from "tray.slint";
+import { SplashWindow } from "splash.slint";
 
-export { Backend, Theme, TrackItem, PlaylistItem, ArtistStat, ArtistItem, AlbumItem, MatchItem, AccentItem, TrayPopup, TrayState }
+export { Backend, Theme, TrackItem, PlaylistItem, ArtistStat, ArtistItem, AlbumItem, MatchItem, AccentItem, TrayPopup, TrayState, SplashWindow }
 
 // Small label above a form field.
 component FieldLabel inherits Text {
@@ -82,9 +83,20 @@ component Sidebar inherits Rectangle {
             clicked => { Backend.navigate(6); }
         }
 
+        // Keeps the playlists apart from the pages above.
+        HorizontalLayout {
+            padding-left: 16px;
+            padding-right: 16px;
+            padding-top: 12px;
+            Rectangle {
+                height: 1px;
+                background: Theme.outline-variant;
+            }
+        }
+
         HorizontalLayout {
             padding-left: root.compact ? 20px : 16px;
-            padding-top: 16px;
+            padding-top: 8px;
             padding-bottom: 4px;
             if !root.compact: Text {
                 text: "Playlists";
@@ -104,21 +116,33 @@ component Sidebar inherits Rectangle {
             }
         }
 
-        sv := ScrollView {
+        // A ScrollView always keeps 12px on its right for the scrollbar, shown or not. In the
+        // icon rail that gutter would narrow the rows and push their icons 6px off the centre
+        // line of the navigation above, so there the rail lets the gutter hang outside itself.
+        Rectangle {
             vertical-stretch: 1;
-            content-width: self.visible-width;
-            content-height: list.preferred-height;
-            list := VerticalLayout {
-                width: sv.visible-width;
-                spacing: 2px;
-                alignment: start;
-                for p in Backend.playlists: NavItem {
-                    compact: root.compact;
-                    icon: p.favorites ? Icons.star : Icons.playlist;
-                    text: p.name;
-                    trailing: p.count;
-                    selected: Backend.page == 3 && Backend.playlist-id == p.id;
-                    clicked => { Backend.open-playlist(p.id); }
+            sv := ScrollView {
+                // x, or the wider view would be centred and hang over the left edge.
+                x: 0;
+                y: 0;
+                width: parent.width + (root.compact ? 12px : 0px);
+                height: parent.height;
+                // In the rail only the bar is gone; the wheel still scrolls.
+                vertical-scrollbar-policy: root.compact ? ScrollBarPolicy.always-off : ScrollBarPolicy.as-needed;
+                content-width: self.visible-width;
+                content-height: list.preferred-height;
+                list := VerticalLayout {
+                    width: sv.visible-width;
+                    spacing: 2px;
+                    alignment: start;
+                    for p in Backend.playlists: NavItem {
+                        compact: root.compact;
+                        icon: p.favorites ? Icons.star : Icons.playlist;
+                        text: p.name;
+                        trailing: p.count;
+                        selected: Backend.page == 3 && Backend.playlist-id == p.id;
+                        clicked => { Backend.open-playlist(p.id); }
+                    }
                 }
             }
         }
@@ -270,6 +294,10 @@ export component AppWindow inherits Window {
             }
 
             if Ui.show-queue: QueuePanel {
+                width: 360px;
+            }
+
+            if Ui.show-lyrics: LyricsPanel {
                 width: 360px;
             }
         }
@@ -425,6 +453,61 @@ export component AppWindow inherits Window {
                             } else if Ui.dialog == 4 {
                                 Backend.delete-playlist();
                             }
+                            Ui.dialog = 0;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // 11: clear the audio cache, with or without the playlists kept offline.
+    if Ui.dialog == 11: Rectangle {
+        background: #00000080;
+        TouchArea { }
+        Rectangle {
+            width: 440px;
+            height: cache-layout.preferred-height;
+            border-radius: Theme.radius-xl;
+            background: Theme.surface-container-high;
+
+            cache-layout := VerticalLayout {
+                padding: 24px;
+                spacing: 16px;
+                Text {
+                    text: "Clear audio cache?";
+                    font-size: 24px;
+                    color: Theme.on-surface;
+                }
+                WrapText {
+                    text: Backend.cache-clear-info;
+                    color: Theme.on-surface-variant;
+                }
+                if Backend.cache-offline-count > 0: WrapText {
+                    text: "Deleting those as well stops keeping those playlists offline.";
+                    font-size: 12px;
+                    color: Theme.on-surface-variant;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: end;
+                    M3Button {
+                        text: "Cancel";
+                        kind: 3;
+                        clicked => { Ui.dialog = 0; }
+                    }
+                    if Backend.cache-offline-count > 0: M3Button {
+                        text: "Keep offline playlists";
+                        kind: 2;
+                        clicked => {
+                            Backend.clear-cache(false);
+                            Ui.dialog = 0;
+                        }
+                    }
+                    M3Button {
+                        text: Backend.cache-offline-count > 0 ? "Delete everything" : "Clear";
+                        clicked => {
+                            Backend.clear-cache(true);
                             Ui.dialog = 0;
                         }
                     }

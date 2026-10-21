@@ -2,6 +2,7 @@ import { ScrollView, LineEdit, TextEdit } from "std-widgets.slint";
 import { Theme } from "../theme.slint";
 import { Icons } from "../icons.slint";
 import { Backend } from "../backend.slint";
+import { Ui } from "../ui_state.slint";
 import { M3Button, IconButton, Chip, M3Switch, M3Slider, M3Spinner, WrapText } from "../widgets.slint";
 
 component SettingsCard inherits Rectangle {
@@ -431,6 +432,12 @@ export component SettingsPage inherits Rectangle {
                     toggled(on) => { Backend.set-ui-flag("show_covers", on); }
                 }
                 ToggleRow {
+                    title: "Launch animation";
+                    description: "Show the trax logo while the app starts.";
+                    checked: Backend.splash-enabled;
+                    toggled(on) => { Backend.set-splash(on); }
+                }
+                ToggleRow {
                     title: "Always use the compact sidebar";
                     checked: Backend.sidebar-always-compact;
                     toggled(on) => { Backend.set-ui-flag("sidebar_compact", on); }
@@ -647,6 +654,24 @@ export component SettingsPage inherits Rectangle {
                     toggled(on) => { Backend.set-pause-fade(on); }
                 }
                 ToggleRow {
+                    title: "Volume normalization";
+                    description: "Play every song at the same loudness. Each song is measured once while it plays, so the first play of a new song may still start at its own level.";
+                    checked: Backend.normalize-enabled;
+                    toggled(on) => { Backend.set-normalize(on); }
+                }
+                if Backend.normalize-enabled && Backend.normalize-info != "": Text {
+                    text: Backend.normalize-info;
+                    font-size: 12px;
+                    overflow: elide;
+                    color: Theme.primary;
+                }
+                ToggleRow {
+                    title: "Lyrics";
+                    description: "Look up the words of the songs you play at LRCLIB and show them in the player (the lyrics button) and in fullscreen. Song and artist names are sent there to find them.";
+                    checked: Backend.lyrics-enabled;
+                    toggled(on) => { Backend.set-lyrics-enabled(on); }
+                }
+                ToggleRow {
                     title: "Favourite song sections";
                     description: "Play only the part of a song you marked (Edit info → Favourite section).";
                     checked: Backend.sections-enabled;
@@ -732,7 +757,7 @@ export component SettingsPage inherits Rectangle {
 
             if root.tab == 3: SettingsCard {
                 title: "Audio cache";
-                description: "YouTube and Nextcloud songs are kept on disk after playing. When the limit is reached, the songs not played for the longest time are removed first.";
+                description: "YouTube, SoundCloud and Nextcloud songs are kept on disk after playing. When the limit is reached, the songs not played for the longest time are removed first. Playlists you keep offline are never removed and don't count towards the limit.";
                 icon: Icons.download;
                 HorizontalLayout {
                     spacing: 8px;
@@ -747,6 +772,18 @@ export component SettingsPage inherits Rectangle {
                     text: Backend.cache-usage;
                     font-size: 12px;
                     color: Theme.on-surface-variant;
+                }
+                ToggleRow {
+                    title: "Always keep playlists offline";
+                    description: "Download every song of every playlist — YouTube, SoundCloud and Nextcloud — and keep it. New playlists are kept offline too. You can switch this off for a single playlist on its page.";
+                    checked: Backend.offline-all;
+                    toggled(on) => { Backend.set-offline-all(on); }
+                }
+                if Backend.offline-status != "": Text {
+                    text: Backend.offline-status;
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: Theme.primary;
                 }
             }
 
@@ -923,9 +960,40 @@ export component SettingsPage inherits Rectangle {
                     }
                 }
                 WrapText {
-                    text: "Some networks block direct connections (strict NAT). A TURN server relays the connection then; leave empty if parties work without it.";
+                    text: "Some networks block direct connections (strict NAT). A TURN server relays the connection then; leave empty if parties work without it. The check below says which case you are in.";
                     font-size: 12px;
                     color: Theme.on-surface-variant;
+                }
+                HorizontalLayout {
+                    spacing: 12px;
+                    alignment: start;
+                    M3Button {
+                        text: Backend.nat-checking ? "Checking…" : "Check my network";
+                        kind: 1;
+                        has-icon: true;
+                        icon: Icons.refresh;
+                        enabled: !Backend.nat-checking;
+                        clicked => { Backend.check-nat(); }
+                    }
+                    if Backend.nat-checking: M3Spinner {
+                        width: 24px;
+                        height: 24px;
+                        y: (parent.height - self.height) / 2;
+                    }
+                }
+                if Backend.nat-headline != "": VerticalLayout {
+                    spacing: 2px;
+                    WrapText {
+                        text: Backend.nat-headline;
+                        font-weight: 600;
+                        color: Backend.nat-checking ? Theme.on-surface-variant
+                            : Backend.nat-needs-turn ? Theme.error : Theme.primary;
+                    }
+                    WrapText {
+                        text: Backend.nat-detail;
+                        font-size: 12px;
+                        color: Theme.on-surface-variant;
+                    }
                 }
                 Field {
                     label: "TURN server";
@@ -933,6 +1001,11 @@ export component SettingsPage inherits Rectangle {
                         placeholder-text: "turn:turn.example.com:3478 (optional)";
                         text <=> Backend.party-turn-url;
                     }
+                }
+                WrapText {
+                    text: "Plain turn: over UDP only \u{2014} turns: (TLS) and ?transport=tcp are not supported yet and are ignored.";
+                    font-size: 12px;
+                    color: Theme.on-surface-variant;
                 }
                 Field {
                     label: "TURN user";
@@ -956,10 +1029,38 @@ export component SettingsPage inherits Rectangle {
                     }
                 }
                 HorizontalLayout {
+                    spacing: 12px;
                     alignment: start;
                     M3Button {
                         text: "Save";
                         clicked => { Backend.party-save-settings(); }
+                    }
+                    M3Button {
+                        text: Backend.turn-checking ? "Testing\u{2026}" : "Test TURN server";
+                        kind: 1;
+                        has-icon: true;
+                        icon: Icons.refresh;
+                        enabled: !Backend.turn-checking;
+                        clicked => { Backend.check-turn(); }
+                    }
+                    if Backend.turn-checking: M3Spinner {
+                        width: 24px;
+                        height: 24px;
+                        y: (parent.height - self.height) / 2;
+                    }
+                }
+                if Backend.turn-headline != "": VerticalLayout {
+                    spacing: 2px;
+                    WrapText {
+                        text: Backend.turn-headline;
+                        font-weight: 600;
+                        color: Backend.turn-checking ? Theme.on-surface-variant
+                            : Backend.turn-ok ? Theme.primary : Theme.error;
+                    }
+                    WrapText {
+                        text: Backend.turn-detail;
+                        font-size: 12px;
+                        color: Theme.on-surface-variant;
                     }
                 }
             }
@@ -1135,7 +1236,10 @@ export component SettingsPage inherits Rectangle {
                         kind: 3;
                         has-icon: true;
                         icon: Icons.delete;
-                        clicked => { Backend.clear-cache(); }
+                        clicked => {
+                            Backend.prepare-clear-cache();
+                            Ui.dialog = 11;
+                        }
                     }
                 }
                 WrapText {

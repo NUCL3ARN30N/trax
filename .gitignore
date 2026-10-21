@@ -1,2 +1,5 @@
 /target
 *.traxbak
+# Local agent notes and shortcuts (machine-specific paths), never committed.
+/CLAUDE.md
+/_localbuild.lnk

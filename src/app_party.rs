@@ -93,7 +93,9 @@ pub(super) enum Intercept {
     QueueAdd(Track, bool),
     /// Index in the local queue.
     QueueRemove(usize),
-    /// Reordering, clearing, shuffle, repeat.
+    /// Dragging a song somewhere else in the queue; both are local queue indexes.
+    QueueMove(usize, usize),
+    /// Clearing, shuffle, repeat.
     QueueEdit,
     /// Playing something else (a list, a file).
     PlayOther,
@@ -147,6 +149,7 @@ fn caps_text(caps: &[Cap]) -> String {
             Cap::Pause => "pause",
             Cap::QueueAdd => "add songs",
             Cap::QueueRemove => "remove songs",
+            Cap::QueueMove => "reorder songs",
         })
         .collect();
     if names.is_empty() { "Listening".into() } else { format!("Can {}", names.join(" · ")) }
@@ -159,6 +162,7 @@ fn cap_from_name(name: &str) -> Option<Cap> {
         "pause" => Cap::Pause,
         "queue_add" => Cap::QueueAdd,
         "queue_remove" => Cap::QueueRemove,
+        "queue_move" => Cap::QueueMove,
         _ => return None,
     })
 }
@@ -531,6 +535,7 @@ impl App {
                 Effect::Seek(ms) => format!("{who} jumped to {}", crate::model::format_duration(*ms)),
                 Effect::QueueAdd { track, .. } => format!("{who} added “{}”", track.title),
                 Effect::QueueRemove(_) => format!("{who} removed a song from the queue"),
+                Effect::QueueMove { .. } => format!("{who} moved a song in the queue"),
             };
             self.party_host_effect(effect);
             self.toast(note);
@@ -567,6 +572,12 @@ impl App {
             Effect::QueueRemove(i) => {
                 if let Some(cur) = self.queue.index {
                     self.queue.remove(cur + 1 + i);
+                    self.refresh_queue();
+                }
+            }
+            Effect::QueueMove { from, to } => {
+                if let Some(cur) = self.queue.index {
+                    self.queue.move_item(cur + 1 + from, cur + 1 + to);
                     self.refresh_queue();
                 }
             }
@@ -640,14 +651,20 @@ impl App {
         self.party_dispatch(outs);
     }
 
-    /// Send queue changes marked by `refresh_queue`.
+    /// Send queue changes marked by `refresh_queue`. The party queue is the player's own
+    /// queue, so anything added, removed or reordered here reaches the guests and the party
+    /// page, whoever caused it.
     fn party_sync_queue(&mut self) {
         if !self.party_queue_dirty.replace(false) {
             return;
         }
         let upcoming = self.party_upcoming();
         let outs = self.host_room().map(|r| r.queue_changed(upcoming)).unwrap_or_default();
+        if outs.is_empty() {
+            return;
+        }
         self.party_dispatch(outs);
+        self.party_ui();
     }
 
     /// Every player tick.
@@ -921,29 +938,70 @@ impl App {
         self.prefetch_next();
     }
 
+    /// Ask the host to do something. False (with a toast) when the guest may not.
+    pub(super) fn party_request(&mut self, op: RequestOp, denied: &str) -> bool {
+        let now = Instant::now();
+        let msg = self.guest_room_mut().and_then(|r| r.request(op, now));
+        match msg {
+            Some(m) => {
+                if let Some(p) = &self.party {
+                    p.link.broadcast(encode(&m));
+                }
+                true
+            }
+            None => {
+                self.toast(denied);
+                false
+            }
+        }
+    }
+
+    /// Move a song in the party queue, from the party page. Entry ids, not positions: the
+    /// songs a guest can't play are missing from its own queue, so positions don't line up.
+    pub(super) fn party_move_entry(&mut self, entry: &str, after: &str) {
+        let positions = match self.party.as_ref().map(|p| &p.role) {
+            Some(PartyRole::Host(room)) => {
+                let q = room.queue();
+                let Some(from) = q.iter().position(|e| e.entry_id == entry) else { return };
+                // Right after the song it names, or first when it names none.
+                let to = if after.is_empty() {
+                    0
+                } else {
+                    match q.iter().position(|e| e.entry_id == after) {
+                        Some(a) if a > from => a,
+                        Some(a) => a + 1,
+                        None => return,
+                    }
+                };
+                Some((from, to))
+            }
+            Some(PartyRole::Guest(_)) => {
+                self.party_request(
+                    RequestOp::QueueMove { entry_id: entry.into(), after_entry_id: after.into() },
+                    "The host hasn't allowed you to reorder the queue",
+                );
+                self.party_ui();
+                return;
+            }
+            None => return,
+        };
+        // Host: its own queue is the party's, so moving it there is the whole job.
+        if let (Some((from, to)), Some(cur)) = (positions, self.queue.index) {
+            if from != to {
+                self.queue.move_item(cur + 1 + from, cur + 1 + to);
+                self.refresh_queue();
+            }
+        }
+    }
+
     /// The guest used a normal control. Returns true when the party took care of it (the
     /// caller must not do its usual thing).
     pub(super) fn party_intercept(&mut self, action: Intercept) -> bool {
         if !self.party_is_guest() || self.party.as_ref().is_some_and(|p| p.applying) {
             return false;
         }
-        let now = Instant::now();
         let instance = self.guest_room().and_then(|r| r.instance());
-        let request = |app: &mut App, op: RequestOp, denied: &str| -> bool {
-            let msg = app.guest_room_mut().and_then(|r| r.request(op, now));
-            match msg {
-                Some(m) => {
-                    if let Some(p) = &app.party {
-                        p.link.broadcast(encode(&m));
-                    }
-                    true
-                }
-                None => {
-                    app.toast(denied);
-                    false
-                }
-            }
-        };
+        let request = |app: &mut App, op: RequestOp, denied: &str| -> bool { app.party_request(op, denied) };
         match action {
             Intercept::TogglePlay => {
                 let Some(instance) = instance else { return true };
@@ -993,7 +1051,26 @@ impl App {
                     request(self, RequestOp::QueueRemove { entry_id }, "The host hasn't allowed you to remove songs");
                 }
             }
-            Intercept::QueueEdit => self.toast("Only the host can change the queue order"),
+            Intercept::QueueMove(from, to) => {
+                // The party queue starts after the song playing now; the host's entry ids
+                // are what a move refers to.
+                let party_index = |i: usize| self.queue.index.and_then(|cur| i.checked_sub(cur + 1));
+                let ids = self.party.as_ref().map(|p| p.mirror_ids.clone()).unwrap_or_default();
+                let (Some(from), Some(to)) = (party_index(from), party_index(to)) else { return true };
+                let Some(entry_id) = ids.get(from).cloned() else { return true };
+                // Moving down lands it after the song now at `to`; moving up, after the one
+                // before that.
+                let after = match to > from {
+                    true => ids.get(to).cloned(),
+                    false => to.checked_sub(1).and_then(|i| ids.get(i).cloned()),
+                };
+                request(
+                    self,
+                    RequestOp::QueueMove { entry_id, after_entry_id: after.unwrap_or_default() },
+                    "The host hasn't allowed you to reorder the queue",
+                );
+            }
+            Intercept::QueueEdit => self.toast("Only the host can change the queue"),
             Intercept::PlayOther => self.toast("You're in a party — leave it to play your own music"),
         }
         self.party_ui();
@@ -1173,6 +1250,7 @@ impl App {
                 pause: p.caps.contains(&Cap::Pause),
                 add: p.caps.contains(&Cap::QueueAdd),
                 remove: p.caps.contains(&Cap::QueueRemove),
+                reorder: p.caps.contains(&Cap::QueueMove),
                 caps_text: s(caps_text(&p.caps)),
             })
             .collect();
@@ -1216,10 +1294,61 @@ impl App {
         b.set_party_can_pause(caps.contains(&Cap::Pause));
         b.set_party_can_add(caps.contains(&Cap::QueueAdd));
         b.set_party_can_remove(caps.contains(&Cap::QueueRemove));
+        b.set_party_can_reorder(caps.contains(&Cap::QueueMove));
         self.party_ui_light();
     }
 
     /// Pending markers (refreshed every tick).
+    /// "Check my network": how strict this network's NAT is, and whether TURN is needed.
+    pub(super) fn check_nat(&mut self) {
+        let b = self.backend();
+        if b.get_nat_checking() {
+            return;
+        }
+        b.set_nat_checking(true);
+        b.set_nat_headline(s("Checking…"));
+        b.set_nat_detail(s("Asking two public STUN servers what this PC looks like from outside."));
+        std::thread::spawn(move || {
+            let report = crate::party::nat::check();
+            post(move |a| {
+                let b = a.backend();
+                b.set_nat_checking(false);
+                b.set_nat_needs_turn(report.needs_turn());
+                b.set_nat_headline(s(report.headline()));
+                b.set_nat_detail(s(report.detail()));
+            });
+        });
+    }
+
+    /// "Test TURN server": ask the server in the settings for a relay address.
+    pub(super) fn check_turn(&mut self) {
+        let b = self.backend();
+        if b.get_turn_checking() {
+            return;
+        }
+        // The test uses what is in the fields, so it can be run before saving.
+        let turn = Turn {
+            url: b.get_party_turn_url().trim().to_string(),
+            username: b.get_party_turn_user().trim().to_string(),
+            credential: b.get_party_turn_pass().to_string(),
+        };
+        b.set_turn_checking(true);
+        b.set_turn_ok(false);
+        b.set_turn_headline(s("Testing\u{2026}"));
+        b.set_turn_detail(s("Asking the server for a relay address, the same way a party does."));
+        std::thread::spawn(move || {
+            let result = crate::party::turn::check(&turn);
+            log::info!("turn check: {result:?}");
+            post(move |a| {
+                let b = a.backend();
+                b.set_turn_checking(false);
+                b.set_turn_ok(result.ok());
+                b.set_turn_headline(s(result.headline()));
+                b.set_turn_detail(s(result.detail()));
+            });
+        });
+    }
+
     fn party_ui_light(&self) {
         let b = self.backend();
         let room = self.guest_room();
@@ -1232,6 +1361,12 @@ impl App {
 /// Backend callbacks for the party page.
 pub(super) fn wire(b: &Backend) {
     use super::with_app;
+    b.on_check_nat(|| {
+        with_app(|a| a.check_nat());
+    });
+    b.on_check_turn(|| {
+        with_app(|a| a.check_turn());
+    });
     b.on_party_create(|pw| {
         with_app(|a| a.party_create(&pw));
     });
@@ -1256,6 +1391,9 @@ pub(super) fn wire(b: &Backend) {
     b.on_party_save_settings(|| {
         with_app(|a| a.save_party_settings());
     });
+    b.on_party_move_entry(|entry, after| {
+        with_app(|a| a.party_move_entry(&entry, &after));
+    });
     b.on_party_remove_entry(|entry| {
         with_app(|a| {
             let Some(cur) = a.queue.index else { return };
@@ -1268,10 +1406,11 @@ pub(super) fn wire(b: &Backend) {
                     }
                 }
                 Some(PartyRole::Guest(_)) => {
-                    let i = a.party.as_ref().and_then(|p| p.mirror_ids.iter().position(|id| *id == entry.as_str()));
-                    if let Some(i) = i {
-                        a.party_intercept(Intercept::QueueRemove(cur + 1 + i));
-                    }
+                    a.party_request(
+                        RequestOp::QueueRemove { entry_id: entry.to_string() },
+                        "The host hasn't allowed you to remove songs",
+                    );
+                    a.party_ui();
                 }
                 None => {}
             }

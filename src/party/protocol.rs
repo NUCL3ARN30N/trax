@@ -31,10 +31,12 @@ pub enum Cap {
     Pause,
     QueueAdd,
     QueueRemove,
+    QueueMove,
 }
 
 impl Cap {
-    pub const ALL: [Cap; 5] = [Cap::Skip, Cap::Seek, Cap::Pause, Cap::QueueAdd, Cap::QueueRemove];
+    pub const ALL: [Cap; 6] =
+        [Cap::Skip, Cap::Seek, Cap::Pause, Cap::QueueAdd, Cap::QueueRemove, Cap::QueueMove];
 }
 
 /// A shareable track. Only YouTube and SoundCloud tracks can be heard by everyone.
@@ -141,6 +143,15 @@ pub enum RequestOp {
         #[serde(rename = "entryId")]
         entry_id: String,
     },
+    /// Move a song in the queue. It lands right after `after_entry_id`, or first when that
+    /// is empty. Naming the neighbour instead of a position keeps the move on the right
+    /// song when the queue changed in the meantime.
+    QueueMove {
+        #[serde(rename = "entryId")]
+        entry_id: String,
+        #[serde(rename = "afterEntryId", default)]
+        after_entry_id: String,
+    },
 }
 
 impl RequestOp {
@@ -152,6 +163,7 @@ impl RequestOp {
             RequestOp::Pause { .. } | RequestOp::Play { .. } => Cap::Pause,
             RequestOp::QueueAdd { .. } => Cap::QueueAdd,
             RequestOp::QueueRemove { .. } => Cap::QueueRemove,
+            RequestOp::QueueMove { .. } => Cap::QueueMove,
         }
     }
 

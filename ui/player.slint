@@ -189,6 +189,8 @@ export component SeekBar inherits HorizontalLayout {
 
 export component VolumeControl inherits HorizontalLayout {
     in property <color> tint: Theme.on-surface-variant;
+    // Short slider where the player bar has no room for the full one.
+    in property <bool> tight: false;
     spacing: 4px;
     IconButton {
         icon: Backend.muted || Backend.volume == 0 ? Icons.volume-off : Icons.volume;
@@ -197,7 +199,7 @@ export component VolumeControl inherits HorizontalLayout {
         clicked => { Backend.toggle-mute(); }
     }
     M3Slider {
-        width: 110px;
+        width: root.tight ? 72px : 110px;
         value: Backend.muted ? 0 : Backend.volume;
         wheel-step: 0.05;
         changed(v) => { Backend.set-volume(v); }
@@ -209,14 +211,21 @@ export component PlayerBar inherits Rectangle {
     height: 92px;
     background: Theme.surface-container;
 
+    // Set from Rust: below 920px the visualizer and the full-length volume slider no longer fit
+    // beside the transport controls, and the buttons on the right would be cut off at the window
+    // edge. A binding on root.width would loop through this bar's own minimum width.
+    property <bool> tight: Backend.narrow-player;
+    property <bool> show-visualizer: Backend.visualizer && Backend.has-track && !Theme.low-end && !root.tight;
+
     HorizontalLayout {
         padding-left: 16px;
         padding-right: 16px;
         spacing: 16px;
 
-        // Now playing
+        // Now playing: takes up to 28% but gives way when the window gets narrow.
         HorizontalLayout {
-            width: 28%;
+            horizontal-stretch: 1;
+            max-width: 360px;
             spacing: 12px;
             Cover {
                 width: 60px;
@@ -267,20 +276,37 @@ export component PlayerBar inherits Rectangle {
             alignment: center;
             spacing: 4px;
             horizontal-stretch: 1;
+            min-width: 320px;
             TransportControls { main-size: 44px; }
             SeekBar { }
         }
 
-        // Extras
+        // Extras: keeps its natural width, so nothing here is ever cut off.
         HorizontalLayout {
-            width: 28%;
+            horizontal-stretch: 0;
             alignment: end;
             spacing: 4px;
-            if Backend.visualizer && Backend.has-track && !Theme.low-end: Visualizer {
+            if root.show-visualizer: Visualizer {
                 y: 28px;
                 width: 96px;
                 height: 36px;
                 values: Backend.spectrum;
+            }
+            // Space between the bars and the first button; they read as one blob otherwise.
+            if root.show-visualizer: Rectangle {
+                width: 10px;
+            }
+            IconButton {
+                y: 26px;
+                icon: Icons.lyrics;
+                icon-size: 20px;
+                active: Ui.show-lyrics;
+                tooltip: "Lyrics";
+                clicked => {
+                    Ui.show-lyrics = !Ui.show-lyrics;
+                    // The two side panels share the space next to the song list.
+                    Ui.show-queue = false;
+                }
             }
             IconButton {
                 y: 26px;
@@ -294,9 +320,12 @@ export component PlayerBar inherits Rectangle {
                 icon: Icons.queue;
                 icon-size: 20px;
                 active: Ui.show-queue;
-                clicked => { Ui.show-queue = !Ui.show-queue; }
+                clicked => {
+                    Ui.show-queue = !Ui.show-queue;
+                    Ui.show-lyrics = false;
+                }
             }
-            VolumeControl { y: 26px; height: 40px; }
+            VolumeControl { y: 26px; height: 40px; tight: root.tight; }
             IconButton {
                 y: 26px;
                 icon: Icons.fullscreen;
@@ -304,6 +333,165 @@ export component PlayerBar inherits Rectangle {
                 enabled: Backend.has-track;
                 clicked => { Backend.toggle-fullscreen(); }
             }
+        }
+    }
+}
+
+// The lyric lines themselves. `active-y` is where the line that is playing sits, so the
+// view around it can scroll along with the song.
+component LyricsList inherits VerticalLayout {
+    in property <length> font-size: 17px;
+    // The line that is playing is shown this much bigger than the rest.
+    in property <float> active-scale: 1.3;
+    in property <color> active-color: Theme.primary;
+    in property <color> dim-color: Theme.on-surface-variant;
+    in property <bool> center: false;
+    // Where the line that is playing sits and how tall it is, so the view can centre it.
+    out property <length> active-y: 0;
+    out property <length> active-height: 0;
+
+    padding: 8px;
+    spacing: 10px;
+    alignment: start;
+
+    for line[i] in Backend.lyrics-lines: Rectangle {
+        property <bool> active: i == Backend.lyrics-index;
+        // Put this line on the map when it starts playing, when the first layout gives it
+        // its place (a view opened mid-song starts with its line already active, so nothing
+        // about it changes), and while it grows into its bigger size.
+        function remember() {
+            if (self.active) {
+                root.active-y = self.y;
+                root.active-height = self.height;
+            }
+        }
+        changed active => { self.remember(); }
+        changed y => { self.remember(); }
+        changed height => { self.remember(); }
+        height: txt.preferred-height;
+        txt := Text {
+            width: 100%;
+            text: line;
+            wrap: word-wrap;
+            horizontal-alignment: root.center ? TextHorizontalAlignment.center : TextHorizontalAlignment.left;
+            font-size: Backend.lyrics-synced && parent.active ? root.font-size * root.active-scale : root.font-size;
+            animate font-size { duration: Theme.low-end ? 0ms : 200ms; easing: ease-out; }
+            font-weight: parent.active ? 700 : 400;
+            color: !Backend.lyrics-synced ? root.dim-color
+                : parent.active ? root.active-color
+                : ta.has-hover ? root.active-color.with-alpha(0.7)
+                : root.dim-color;
+            animate color { duration: Theme.low-end ? 0ms : 200ms; }
+        }
+        // Clicking a timed line jumps to it.
+        ta := TouchArea {
+            enabled: Backend.lyrics-synced;
+            mouse-cursor: pointer;
+            clicked => { Backend.seek-to-line(i); }
+        }
+    }
+}
+
+// Scrolling lyrics: timed lyrics follow the song, plain ones are scrolled by hand.
+export component LyricsView inherits Rectangle {
+    in property <length> font-size: 17px;
+    in property <float> active-scale: 1.3;
+    in property <color> active-color: Theme.primary;
+    in property <color> dim-color: Theme.on-surface-variant;
+    in property <bool> center: false;
+
+    if Backend.lyrics-synced: follow := ScrollView {
+        width: 100%;
+        height: 100%;
+        vertical-scrollbar-policy: always-off;
+        content-width: self.visible-width;
+        content-height: timed.preferred-height;
+        // Keep the line that is playing in the middle, without scrolling past the ends.
+        content-y: clamp(
+            follow.visible-height / 2 - timed.active-y - timed.active-height / 2,
+            Math.min(0px, follow.visible-height - timed.preferred-height),
+            0px);
+        animate content-y { duration: Theme.low-end ? 0ms : 400ms; easing: ease-out; }
+        timed := LyricsList {
+            width: follow.visible-width;
+            font-size: root.font-size;
+            active-scale: root.active-scale;
+            active-color: root.active-color;
+            dim-color: root.dim-color;
+            center: root.center;
+        }
+    }
+
+    if !Backend.lyrics-synced: plain := ScrollView {
+        width: 100%;
+        height: 100%;
+        content-width: self.visible-width;
+        content-height: untimed.preferred-height;
+        untimed := LyricsList {
+            width: plain.visible-width;
+            font-size: root.font-size;
+            active-scale: root.active-scale;
+            active-color: root.active-color;
+            dim-color: root.dim-color;
+            center: root.center;
+        }
+    }
+}
+
+// Lyrics beside the song list (the button in the player bar).
+export component LyricsPanel inherits Rectangle {
+    border-radius: Theme.radius-large;
+    background: Theme.surface-container-low;
+
+    VerticalLayout {
+        padding: 16px;
+        spacing: 8px;
+        HorizontalLayout {
+            spacing: 4px;
+            Text {
+                horizontal-stretch: 1;
+                text: "Lyrics";
+                font-size: 20px;
+                font-weight: 700;
+                vertical-alignment: center;
+                overflow: elide;
+                color: Theme.on-surface;
+            }
+            IconButton {
+                icon: Icons.refresh;
+                icon-size: 20px;
+                enabled: Backend.has-track;
+                tooltip: "Look for the lyrics again";
+                clicked => { Backend.refresh-lyrics(); }
+            }
+            IconButton {
+                icon: Icons.close;
+                icon-size: 20px;
+                clicked => { Ui.show-lyrics = false; }
+            }
+        }
+        if Backend.has-track: Text {
+            text: Backend.now-title + " \u{b7} " + Backend.now-artist;
+            font-size: 12px;
+            overflow: elide;
+            color: Theme.on-surface-variant;
+        }
+        if !Backend.has-track: WrapText {
+            text: "Play a song to see its lyrics.";
+            color: Theme.on-surface-variant;
+        }
+        if Backend.lyrics-status != "": WrapText {
+            text: Backend.lyrics-status;
+            color: Theme.on-surface-variant;
+        }
+        LyricsView {
+            vertical-stretch: 1;
+        }
+        if Backend.lyrics-lines.length > 0: Text {
+            text: Backend.lyrics-synced ? "Lyrics from LRCLIB \u{b7} click a line to jump there" : "Lyrics from LRCLIB";
+            font-size: 11px;
+            overflow: elide;
+            color: Theme.on-surface-variant;
         }
     }
 }
@@ -757,7 +945,7 @@ export component FullscreenView inherits Rectangle {
     if !root.show-art: Rectangle {
         background: @radial-gradient(circle, Theme.primary-container.darker(0.4) 0%, #000000 75%);
     }
-    if root.show-vis: FsVisualizer {
+    if root.show-vis && !Ui.fs-lyrics: FsVisualizer {
         x: 0;
         y: root.show-art ? root.height * 0.25 : root.height * 0.08;
         width: root.width;
@@ -771,6 +959,30 @@ export component FullscreenView inherits Rectangle {
     }
     Rectangle {
         background: @linear-gradient(180deg, #00000066 0%, #00000000 30%, #000000aa 65%, #000000f0 100%);
+    }
+
+    if Ui.fs-lyrics: Rectangle {
+        x: root.width * 0.12;
+        y: 88px;
+        width: root.width * 0.76;
+        height: root.height * 0.52;
+        if Backend.lyrics-status != "": Text {
+            y: 0;
+            width: 100%;
+            text: Backend.lyrics-status;
+            font-size: 18px;
+            horizontal-alignment: center;
+            color: #ffffffaa;
+        }
+        LyricsView {
+            width: 100%;
+            height: 100%;
+            font-size: 30px;
+            active-scale: 1.6;
+            center: true;
+            active-color: #ffffff;
+            dim-color: #ffffff55;
+        }
     }
 
     fs := FocusScope {
@@ -802,6 +1014,13 @@ export component FullscreenView inherits Rectangle {
         width: self.preferred-width;
         height: 48px;
         spacing: 8px;
+        IconButton {
+            icon: Icons.lyrics;
+            tint: #ffffff;
+            active: Ui.fs-lyrics;
+            tooltip: "Lyrics";
+            clicked => { Ui.fs-lyrics = !Ui.fs-lyrics; }
+        }
         IconButton {
             icon: Icons.image;
             tint: #ffffff;

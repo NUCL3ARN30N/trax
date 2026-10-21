@@ -3,7 +3,7 @@ import { Theme } from "../theme.slint";
 import { Icons } from "../icons.slint";
 import { Backend } from "../backend.slint";
 import { Ui } from "../ui_state.slint";
-import { TrackRow, SectionHeader, M3Spinner, WrapText, Chip } from "../widgets.slint";
+import { TrackRow, SectionHeader, M3Spinner, WrapText, IconButton } from "../widgets.slint";
 
 export component SearchPage inherits Rectangle {
     VerticalLayout {
@@ -50,20 +50,21 @@ export component SearchPage inherits Rectangle {
             }
         }
 
-        // Source filter, only when there is more than one place to search.
+        // Where to search, only when there is more than one place to look.
         if Backend.yt-enabled || Backend.sc-enabled: HorizontalLayout {
-            spacing: 8px;
+            spacing: 4px;
             alignment: start;
             for f[i] in [
-                { label: "Everywhere", scope: 0, show: true },
-                { label: "Library", scope: 1, show: true },
-                { label: "YouTube", scope: 2, show: Backend.yt-enabled },
-                { label: "SoundCloud", scope: 3, show: Backend.sc-enabled },
-            ]: Chip {
+                { label: "Everywhere", icon: Icons.auto, scope: 0, show: true },
+                { label: "Library", icon: Icons.library, scope: 1, show: true },
+                { label: "YouTube", icon: Icons.youtube, scope: 2, show: Backend.yt-enabled },
+                { label: "SoundCloud", icon: Icons.soundcloud, scope: 3, show: Backend.sc-enabled },
+            ]: IconButton {
                 visible: f.show;
-                width: f.show ? self.preferred-width : 0px;
-                text: f.label;
-                selected: Backend.search-scope == f.scope;
+                width: f.show ? self.size : 0px;
+                icon: f.icon;
+                tooltip: f.label;
+                tonal: Backend.search-scope == f.scope;
                 clicked => {
                     Backend.search-scope = f.scope;
                     Backend.search(Backend.search-query);

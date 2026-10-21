@@ -34,6 +34,8 @@ pub enum Effect {
     QueueAdd { track: TrackRef, next: bool },
     /// Index in the upcoming queue.
     QueueRemove(usize),
+    /// Move a song inside the upcoming queue: both are indexes in it.
+    QueueMove { from: usize, to: usize },
 }
 
 #[derive(Debug, Clone)]
@@ -406,6 +408,25 @@ impl HostRoom {
                 }
                 (Effect::QueueAdd { track, next: mode == AddMode::Next }, AppliedOp::QueueAdd)
             }
+            RequestOp::QueueMove { entry_id, after_entry_id } => {
+                let Some(from) = self.entries.iter().position(|e| e.entry_id == entry_id) else {
+                    return self.reject(peer, &op_id, RejectReason::UnknownEntry);
+                };
+                // Right after the song it names, or first when it names none.
+                let to = if after_entry_id.is_empty() {
+                    0
+                } else {
+                    match self.entries.iter().position(|e| e.entry_id == after_entry_id) {
+                        Some(after) if after > from => after,
+                        Some(after) => after + 1,
+                        None => return self.reject(peer, &op_id, RejectReason::UnknownEntry),
+                    }
+                };
+                if from == to {
+                    return self.reject(peer, &op_id, RejectReason::StaleTrack);
+                }
+                (Effect::QueueMove { from, to }, AppliedOp::QueueReorder)
+            }
             RequestOp::QueueRemove { entry_id } => match self.entries.iter().position(|e| e.entry_id == entry_id) {
                 Some(i) => (Effect::QueueRemove(i), AppliedOp::QueueRemove),
                 None => return self.reject(peer, &op_id, RejectReason::UnknownEntry),
@@ -523,7 +544,7 @@ impl HostRoom {
         if old == new {
             return vec![];
         }
-        let (op_id, by) = self.attribution(&[AppliedOp::QueueAdd, AppliedOp::QueueRemove]);
+        let (op_id, by) = self.attribution(&[AppliedOp::QueueAdd, AppliedOp::QueueRemove, AppliedOp::QueueReorder]);
         // Cleared.
         if new.is_empty() {
             self.entries.clear();
@@ -691,6 +712,61 @@ mod tests {
         let inst = r.current_instance().unwrap().to_string();
         let (out, _) = r.handle("g1", req("o5", acl(&r), skip(&inst)), now + Duration::from_millis(500), 0, &|_| true);
         assert_eq!(rejected(&out), Some(RejectReason::Cooldown));
+    }
+
+    /// A guest with "reorder" may move a song; the move names the song it lands after, so
+    /// it survives the queue changing underneath.
+    #[test]
+    fn queue_move_needs_the_cap_and_lands_after_the_named_song() {
+        let (mut r, now) = room_with_guest();
+        r.queue_changed(vec![yt("a"), yt("b"), yt("c")]);
+        let ids: Vec<String> = r.queue().iter().map(|e| e.entry_id.clone()).collect();
+        let move_op = |entry: &str, after: &str| RequestOp::QueueMove {
+            entry_id: entry.into(),
+            after_entry_id: after.into(),
+        };
+
+        // Without the capability: refused, and the App is told to do nothing.
+        let (out, eff) = r.handle("g1", req("m0", acl(&r), move_op(&ids[2], "")), now, 0, &|_| true);
+        assert_eq!(rejected(&out), Some(RejectReason::NoCap));
+        assert!(eff.is_none());
+
+        r.grant("g1", Cap::QueueMove);
+        // To the front.
+        let (_, eff) = r.handle("g1", req("m1", acl(&r), move_op(&ids[2], "")), now, 0, &|_| true);
+        assert_eq!(eff, Some((Effect::QueueMove { from: 2, to: 0 }, "m1".into())));
+        // After another song, moving down: the gap it leaves behind is accounted for.
+        let (_, eff) = r.handle("g1", req("m2", acl(&r), move_op(&ids[0], &ids[2])), now, 0, &|_| true);
+        assert_eq!(eff, Some((Effect::QueueMove { from: 0, to: 2 }, "m2".into())));
+        // Moving up lands right after the named song.
+        let (_, eff) = r.handle("g1", req("m3", acl(&r), move_op(&ids[2], &ids[0])), now, 0, &|_| true);
+        assert_eq!(eff, Some((Effect::QueueMove { from: 2, to: 1 }, "m3".into())));
+        // A song that is gone, and a move that changes nothing, are refused.
+        let (out, _) = r.handle("g1", req("m4", acl(&r), move_op("gone", "")), now, 0, &|_| true);
+        assert_eq!(rejected(&out), Some(RejectReason::UnknownEntry));
+        let (out, _) = r.handle("g1", req("m5", acl(&r), move_op(&ids[0], "")), now, 0, &|_| true);
+        assert_eq!(rejected(&out), Some(RejectReason::StaleTrack));
+    }
+
+    /// The host carrying the move out is broadcast as that guest's work.
+    #[test]
+    fn a_reorder_is_credited_to_the_guest_who_asked() {
+        let (mut r, now) = room_with_guest();
+        r.queue_changed(vec![yt("a"), yt("b"), yt("c")]);
+        let ids: Vec<String> = r.queue().iter().map(|e| e.entry_id.clone()).collect();
+        r.grant("g1", Cap::QueueMove);
+        let op = RequestOp::QueueMove { entry_id: ids[2].clone(), after_entry_id: String::new() };
+        let (_, eff) = r.handle("g1", req("m1", acl(&r), op), now, 0, &|_| true);
+        assert!(eff.is_some());
+        // The App moved the song and reports its queue back.
+        let out = r.queue_changed(vec![yt("c"), yt("a"), yt("b")]);
+        match &out[..] {
+            [Out::All(HostMsg::Applied { op, op_id, by, order: Some(order), .. })] => {
+                assert_eq!((*op, op_id.as_str(), by.as_str()), (AppliedOp::QueueReorder, "m1", "g1"));
+                assert_eq!(order, &vec![ids[2].clone(), ids[0].clone(), ids[1].clone()]);
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]

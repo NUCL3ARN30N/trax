@@ -75,11 +75,11 @@ component PeerRow inherits Rectangle {
             if !root.peer.online: Badge { text: "Offline"; y: (parent.height - self.height) / 2; }
             Rectangle { horizontal-stretch: 1; }
             if root.host-view && !root.peer.host: M3Button {
-                text: root.peer.skip && root.peer.seek && root.peer.pause && root.peer.add && root.peer.remove ? "Revoke all" : "Grant all";
+                text: root.peer.skip && root.peer.seek && root.peer.pause && root.peer.add && root.peer.remove && root.peer.reorder ? "Revoke all" : "Grant all";
                 kind: 3;
                 clicked => {
                     Backend.party-grant-all(root.peer.id,
-                        !(root.peer.skip && root.peer.seek && root.peer.pause && root.peer.add && root.peer.remove));
+                        !(root.peer.skip && root.peer.seek && root.peer.pause && root.peer.add && root.peer.remove && root.peer.reorder));
                 }
             }
             if root.host-view && !root.peer.host: M3Button {
@@ -97,6 +97,7 @@ component PeerRow inherits Rectangle {
             Chip { text: "Pause"; selected: root.peer.pause; clicked => { Backend.party-set-cap(root.peer.id, "pause", !root.peer.pause); } }
             Chip { text: "Add songs"; selected: root.peer.add; clicked => { Backend.party-set-cap(root.peer.id, "queue_add", !root.peer.add); } }
             Chip { text: "Remove songs"; selected: root.peer.remove; clicked => { Backend.party-set-cap(root.peer.id, "queue_remove", !root.peer.remove); } }
+            Chip { text: "Reorder"; selected: root.peer.reorder; clicked => { Backend.party-set-cap(root.peer.id, "queue_move", !root.peer.reorder); } }
         }
         if !root.peer.host && !root.host-view: Text {
             text: root.peer.caps-text;
@@ -106,46 +107,112 @@ component PeerRow inherits Rectangle {
     }
 }
 
+// A song in the party queue, which is the player's own queue. The host can drag rows to
+// reorder it; everyone sees the new order.
 component QueueRow inherits Rectangle {
     in property <PartyEntry> entry;
     in property <int> index;
     in property <bool> can-remove;
+    in property <bool> can-reorder: false;
+    // Drag state of the whole list, shared by all rows.
+    in property <int> drag-from: -1;
+    in property <int> drop-index: -1;
+    in property <length> drag-dy: 0;
+    callback drag-moved(length);
+    callback drag-ended();
+    // Pointer position (window coordinates) when the drag started.
+    property <length> drag-start-y;
+
+    property <bool> dragged: root.drag-from == root.index;
+    // One row plus the 4px gap between them.
+    property <length> step: root.height + 4px;
+    property <length> shift: root.drag-from < 0 || root.dragged ? 0px
+        : root.drag-from < root.index && root.index <= root.drop-index ? -root.step
+        : root.drop-index <= root.index && root.index < root.drag-from ? root.step : 0px;
+
     height: 56px;
-    border-radius: Theme.radius-small;
-    background: Theme.surface-container-high;
-    opacity: root.entry.pending ? 0.55 : 1;
-    HorizontalLayout {
-        padding-left: 12px;
-        padding-right: 8px;
-        spacing: 12px;
-        Text {
-            width: 24px;
-            text: root.index + 1;
-            vertical-alignment: center;
-            horizontal-alignment: right;
-            color: Theme.on-surface-variant;
-        }
-        VerticalLayout {
-            alignment: center;
-            horizontal-stretch: 1;
-            Text {
-                text: root.entry.title;
-                overflow: elide;
-                color: Theme.on-surface;
+    z: root.dragged ? 10 : 0;
+
+    // Slides when another row is dragged past this one.
+    slot := Rectangle {
+        y: root.shift;
+        width: root.width;
+        height: root.height;
+        animate y { duration: Theme.low-end ? 0ms : 180ms; easing: ease-out; }
+
+        // Follows the pointer while this row is dragged.
+        Rectangle {
+            y: root.dragged ? root.drag-dy : 0px;
+            width: parent.width;
+            height: parent.height;
+            border-radius: Theme.radius-small;
+            background: root.dragged ? Theme.surface-container-highest : Theme.surface-container-high;
+            opacity: root.entry.pending ? 0.55 : 1;
+            drop-shadow-blur: root.dragged && !Theme.low-end ? 16px : 0px;
+            drop-shadow-offset-y: root.dragged ? 4px : 0px;
+            drop-shadow-color: #00000070;
+
+            HorizontalLayout {
+                padding-left: 12px;
+                padding-right: 8px;
+                spacing: 12px;
+
+                if root.can-reorder: Rectangle {
+                    width: 24px;
+                    Image {
+                        source: Icons.drag;
+                        width: 20px;
+                        colorize: root.dragged ? Theme.primary : Theme.on-surface-variant;
+                    }
+                    // The handle moves with the dragged row, so its local mouse position would
+                    // feed back into the offset (flicker). Measure in window coordinates instead.
+                    TouchArea {
+                        mouse-cursor: root.dragged ? grabbing : grab;
+                        moved => {
+                            if self.pressed {
+                                root.drag-moved(self.absolute-position.y + self.mouse-y - root.drag-start-y);
+                            }
+                        }
+                        pointer-event(e) => {
+                            if e.kind == PointerEventKind.down {
+                                root.drag-start-y = self.absolute-position.y + self.mouse-y;
+                            }
+                            if e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel {
+                                root.drag-ended();
+                            }
+                        }
+                    }
+                }
+                Text {
+                    width: 24px;
+                    text: root.index + 1;
+                    vertical-alignment: center;
+                    horizontal-alignment: right;
+                    color: Theme.on-surface-variant;
+                }
+                VerticalLayout {
+                    alignment: center;
+                    horizontal-stretch: 1;
+                    Text {
+                        text: root.entry.title;
+                        overflow: elide;
+                        color: Theme.on-surface;
+                    }
+                    Text {
+                        text: (root.entry.artist != "" ? root.entry.artist + " · " : "") + "Added by " + root.entry.added-by
+                            + (root.entry.pending ? " · waiting for the host…" : "") + (root.entry.playable ? "" : " · only the host can hear this");
+                        overflow: elide;
+                        font-size: 12px;
+                        color: Theme.on-surface-variant;
+                    }
+                }
+                if root.can-remove && root.entry.id != "" && !root.entry.pending: IconButton {
+                    y: (parent.height - self.height) / 2;
+                    icon: Icons.close;
+                    tooltip: "Remove from the party queue";
+                    clicked => { Backend.party-remove-entry(root.entry.id); }
+                }
             }
-            Text {
-                text: (root.entry.artist != "" ? root.entry.artist + " · " : "") + "Added by " + root.entry.added-by
-                    + (root.entry.pending ? " · waiting for the host…" : "") + (root.entry.playable ? "" : " · only the host can hear this");
-                overflow: elide;
-                font-size: 12px;
-                color: Theme.on-surface-variant;
-            }
-        }
-        if root.can-remove && root.entry.id != "" && !root.entry.pending: IconButton {
-            y: (parent.height - self.height) / 2;
-            icon: Icons.close;
-            tooltip: "Remove from the party queue";
-            clicked => { Backend.party-remove-entry(root.entry.id); }
         }
     }
 }
@@ -156,6 +223,11 @@ export component PartyPage inherits Rectangle {
     property <string> join-password;
     // Connected (a guest still looking for the party only sees the status).
     property <bool> in-room: Backend.party-mode == 1 || (Backend.party-mode == 2 && Backend.party-phase != "connecting");
+    // Dragging a song to a new place in the queue (host only).
+    property <int> drag-from: -1;
+    property <length> drag-dy: 0;
+    property <int> drop-index: root.drag-from < 0 ? -1
+        : clamp(root.drag-from + Math.round(root.drag-dy / 60px), 0, Backend.party-queue.length - 1);
 
     sv := ScrollView {
         content-width: self.visible-width;
@@ -248,6 +320,38 @@ export component PartyPage inherits Rectangle {
             if Backend.party-error != "": WrapText {
                 text: Backend.party-error;
                 color: Theme.error;
+            }
+            // A failed connection is usually the network, so offer the check right here.
+            if Backend.party-error != "" || Backend.nat-headline != "": VerticalLayout {
+                spacing: 6px;
+                HorizontalLayout {
+                    spacing: 12px;
+                    alignment: start;
+                    M3Button {
+                        text: Backend.nat-checking ? "Checking…" : "Check my network";
+                        kind: 2;
+                        has-icon: true;
+                        icon: Icons.refresh;
+                        enabled: !Backend.nat-checking;
+                        clicked => { Backend.check-nat(); }
+                    }
+                    if Backend.nat-checking: M3Spinner {
+                        width: 24px;
+                        height: 24px;
+                        y: (parent.height - self.height) / 2;
+                    }
+                }
+                if Backend.nat-headline != "": WrapText {
+                    text: Backend.nat-headline;
+                    font-weight: 600;
+                    color: Backend.nat-checking ? Theme.on-surface-variant
+                        : Backend.nat-needs-turn ? Theme.error : Theme.primary;
+                }
+                if Backend.nat-headline != "": WrapText {
+                    text: Backend.nat-detail;
+                    font-size: 12px;
+                    color: Theme.on-surface-variant;
+                }
             }
 
             // ---- in a party
@@ -359,12 +463,41 @@ export component PartyPage inherits Rectangle {
                 text: "The queue is empty.";
                 color: Theme.on-surface-variant;
             }
+            if root.in-room && Backend.party-queue.length > 1 && (Backend.party-mode == 1 || Backend.party-can-reorder): Text {
+                text: Backend.party-mode == 1
+                    ? "This is your own queue — drag a song to play it sooner."
+                    : "The host let you reorder — drag a song to move it for everyone.";
+                font-size: 12px;
+                color: Theme.on-surface-variant;
+            }
             if root.in-room: VerticalLayout {
                 spacing: 4px;
                 for e[i] in Backend.party-queue: QueueRow {
                     entry: e;
                     index: i;
                     can-remove: Backend.party-mode == 1 || Backend.party-can-remove;
+                    can-reorder: Backend.party-mode == 1 || Backend.party-can-reorder;
+                    drag-from: root.drag-from;
+                    drop-index: root.drop-index;
+                    drag-dy: root.drag-dy;
+                    drag-moved(dy) => {
+                        root.drag-from = i;
+                        root.drag-dy = dy;
+                    }
+                    drag-ended => {
+                        if root.drag-from >= 0 && root.drop-index != root.drag-from {
+                            // By entry id: a guest's own queue holds only the songs it can
+                            // play, so positions in it don't line up with the party's.
+                            Backend.party-move-entry(Backend.party-queue[root.drag-from].id,
+                                root.drop-index > root.drag-from
+                                    ? Backend.party-queue[root.drop-index].id
+                                    : root.drop-index == 0
+                                        ? ""
+                                        : Backend.party-queue[root.drop-index - 1].id);
+                        }
+                        root.drag-from = -1;
+                        root.drag-dy = 0;
+                    }
                 }
             }
         }

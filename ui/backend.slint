@@ -62,6 +62,7 @@ export struct PartyPeer {
     pause: bool,
     add: bool,
     remove: bool,
+    reorder: bool,
     // "Can skip · pause" / "Listening".
     caps-text: string,
 }
@@ -94,6 +95,9 @@ export global Backend {
     // Window narrower than 1100 logical px: collapse the sidebar to an icon rail. Set from Rust
     // (a binding on the window width would loop through the sidebar's minimum width).
     in property <bool> narrow-nav: false;
+    // Window narrower than 920 logical px: the player bar drops the visualizer and shortens the
+    // volume slider so the buttons on its right still fit. Set from Rust, for the same reason.
+    in property <bool> narrow-player: false;
     in-out property <bool> fullscreen: false;
 
     // ---- now playing
@@ -179,6 +183,14 @@ export global Backend {
     in property <string> playlist-description;
     in property <image> playlist-cover;
     in property <bool> playlist-has-cover: false;
+    // The open playlist's songs are downloaded and kept out of the cache eviction.
+    in property <bool> playlist-offline: false;
+    // Progress while songs of the playlists kept offline are downloading.
+    in property <string> offline-status;
+    // Keep every playlist (and every new one) offline.
+    in property <bool> offline-all: false;
+    callback set-playlist-offline(bool);
+    callback set-offline-all(bool);
 
     // ---- edit dialogs (track info / playlist details)
     in-out property <string> edit-title;
@@ -303,7 +315,8 @@ export global Backend {
     callback import-data();
     callback remap-paths(string, string);
     callback open-data-dir();
-    callback clear-cache();
+    // true also deletes the downloads of the playlists kept offline.
+    callback clear-cache(bool);
     callback toggle-fullscreen();
 
     // ---- favourites
@@ -352,6 +365,29 @@ export global Backend {
     callback set-sections-enabled(bool);
     callback edit-section-from-position(bool);
 
+    // ---- lyrics (LRCLIB)
+    in property <bool> lyrics-enabled: true;
+    in property <[string]> lyrics-lines;
+    // Line that is playing, -1 before the first one or when the lyrics are not timed.
+    in property <int> lyrics-index: -1;
+    // The lines carry timestamps: they follow the song and can be clicked to jump.
+    in property <bool> lyrics-synced: false;
+    // "Looking for lyrics…" / "No lyrics found for this song." / "" while they are shown.
+    in property <string> lyrics-status;
+    callback set-lyrics-enabled(bool);
+    callback refresh-lyrics();
+    callback seek-to-line(int);
+
+    // ---- volume normalization
+    in property <bool> normalize-enabled: false;
+    // What normalization does to the song that is playing.
+    in property <string> normalize-info;
+    callback set-normalize(bool);
+
+    // ---- launch animation
+    in property <bool> splash-enabled: true;
+    callback set-splash(bool);
+
     // ---- visualizer
     in property <bool> visualizer: false;
     in property <[float]> spectrum;
@@ -370,7 +406,11 @@ export global Backend {
     // ---- audio cache
     in property <int> cache-limit-mb: 4096;
     in property <string> cache-usage;
+    // What the "clear audio cache" dialog shows, and how many playlists are kept offline.
+    in property <string> cache-clear-info;
+    in property <int> cache-offline-count: 0;
     callback set-cache-limit(int);
+    callback prepare-clear-cache();
 
     // ---- appearance
     in property <string> accent: "#6750a4";
@@ -417,6 +457,7 @@ export global Backend {
     in property <bool> party-can-pause;
     in property <bool> party-can-add;
     in property <bool> party-can-remove;
+    in property <bool> party-can-reorder;
     in property <bool> party-skip-pending;
     in property <bool> party-pause-pending;
     in property <bool> party-seek-pending;
@@ -425,6 +466,18 @@ export global Backend {
     in-out property <string> party-turn-user;
     in-out property <string> party-turn-pass;
     in-out property <string> party-relays;
+    // ---- "check my network": how strict this network is, and whether TURN is needed
+    in property <bool> nat-needs-turn: false;
+    // ---- "test the TURN server": does it hand this PC a relay address?
+    in property <bool> turn-checking: false;
+    in property <bool> turn-ok: false;
+    in property <string> turn-headline;
+    in property <string> turn-detail;
+    callback check-turn();
+    in property <bool> nat-checking: false;
+    in property <string> nat-headline;
+    in property <string> nat-detail;
+    callback check-nat();
     callback party-create(string);
     callback party-join(string, string);
     callback party-leave();
@@ -434,6 +487,8 @@ export global Backend {
     callback party-kick(string);
     callback party-save-settings();
     callback party-remove-entry(string);
+    // Move a song in the party queue: the song, and the one it lands after ("" = first).
+    callback party-move-entry(string, string);
 
     // ---- playlist share codes
     in property <string> share-code;

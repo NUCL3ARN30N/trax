@@ -7854,7 +7854,7 @@ dependencies = [
 
 [[package]]
 name = "trax"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7868,9 +7868,11 @@ dependencies = [
  "flate2",
  "futures-util",
  "hkdf",
+ "hmac 0.13.0",
  "image",
  "lofty",
  "log",
+ "md-5",
  "nostr",
  "percent-encoding",
  "pitch_shift",
@@ -7886,6 +7888,7 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "sha1 0.11.0",
  "sha2",
  "slint",
  "slint-build",

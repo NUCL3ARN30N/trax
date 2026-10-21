@@ -159,7 +159,10 @@ export component NavItem inherits Rectangle {
     animate background { duration: Theme.low-end ? 0ms : 120ms; }
 
     HorizontalLayout {
-        padding-left: root.compact ? (root.width - 22px) / 2 : 16px;
+        // The rail centres the icon through the layout: deriving a padding from root.width
+        // would feed back into this row's own minimum width and settle on the wrong number.
+        alignment: root.compact ? LayoutAlignment.center : LayoutAlignment.stretch;
+        padding-left: root.compact ? 0px : 16px;
         padding-right: root.compact ? 0px : 16px;
         spacing: 12px;
         Image {

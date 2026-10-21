@@ -1,0 +1,122 @@
+// The launch animation (Settings → Appearance → Launch animation).
+//
+// One timeline: `t` runs from 0 to 1 while the application starts up, and every part of the
+// animation reads the slice of it that belongs to it. Rust closes the window when the
+// timeline is over.
+
+export component SplashWindow inherits Window {
+    in property <string> version;
+    title: "trax";
+    icon: @image-url("../assets/logo/AppIcon.iconset/icon_256x256.png");
+    no-frame: true;
+    always-on-top: true;
+    width: 460px;
+    height: 320px;
+    background: #0c0a10;
+
+    // The master timeline; the duration matches SPLASH in app.rs.
+    in-out property <float> t: 0;
+    animate t {
+        duration: 2200ms;
+        easing: linear;
+    }
+
+    // 0 before `from`, 1 after `to`, linear in between.
+    pure function slice(from: float, to: float) -> float {
+        return clamp((root.t - from) / (to - from), 0.0, 1.0);
+    }
+
+    property <float> enter: root.slice(0.02, 0.36);
+    // Ease-out cubic, with a small overshoot so the mark lands with some weight.
+    property <float> grow: 1 - Math.pow(1 - root.enter, 3);
+    property <float> scale: 0.58 + 0.42 * root.grow + 0.05 * Math.sin(180deg * root.grow);
+    property <float> sweep: root.slice(0.26, 0.66);
+    property <float> name-in: root.slice(0.36, 0.62);
+    property <float> bar: root.slice(0.3, 0.96);
+    property <float> leave: root.slice(0.9, 1.0);
+
+    property <length> tile: 132px;
+    property <color> accent: #b69dff;
+
+    // Start the timeline as soon as the window is on screen.
+    Rectangle {
+        init => { root.t = 1; }
+    }
+
+    content := Rectangle {
+        opacity: 1 - root.leave;
+
+        // The glow behind the mark grows with it.
+        Rectangle {
+            x: (root.width - self.width) / 2;
+            y: 92px - self.height / 2;
+            width: 440px * root.grow;
+            height: self.width;
+            border-radius: self.width / 2;
+            background: @radial-gradient(circle, #6750a455 0%, #6750a400 62%);
+        }
+
+        mark := Rectangle {
+            x: (root.width - self.width) / 2;
+            y: 92px - self.height / 2;
+            width: root.tile * root.scale;
+            height: self.width;
+            border-radius: 30px * root.scale;
+            background: #ffffff;
+            clip: true;
+            opacity: Math.min(1.0, root.enter * 3);
+
+            Image {
+                width: parent.width * 0.86;
+                height: self.width;
+                source: @image-url("../assets/logo/trax_mark.svg");
+                image-fit: contain;
+            }
+            // A sheen crossing the mark once it has landed.
+            Rectangle {
+                x: (-1.6 + 3.2 * root.sweep) * parent.width;
+                width: parent.width;
+                height: parent.height;
+                background: @linear-gradient(110deg, #ffffff00 20%, #6750a466 48%, #b69dff88 52%, #ffffff00 80%);
+            }
+        }
+
+        name := Text {
+            x: (root.width - self.width) / 2;
+            y: 192px + 14px * (1 - root.name-in);
+            text: "trax";
+            font-size: 46px;
+            font-weight: 800;
+            letter-spacing: 2px;
+            color: #ffffff;
+            opacity: root.name-in;
+        }
+
+        Text {
+            x: (root.width - self.width) / 2;
+            y: 250px;
+            text: root.version;
+            font-size: 12px;
+            letter-spacing: 1px;
+            color: #ffffff66;
+            opacity: root.name-in;
+        }
+
+        // The line fills while the library is being opened.
+        Rectangle {
+            x: (root.width - self.width) / 2;
+            y: 288px;
+            width: 200px;
+            height: 3px;
+            border-radius: 1.5px;
+            background: #ffffff1a;
+            Rectangle {
+                x: 0;
+                width: parent.width * root.bar;
+                height: parent.height;
+                border-radius: parent.border-radius;
+                background: @linear-gradient(90deg, #6750a4 0%, root.accent 100%);
+            }
+        }
+    }
+}

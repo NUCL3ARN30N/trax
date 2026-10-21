@@ -50,8 +50,7 @@ pub fn load() -> Result<Identity> {
     Ok(Identity { certificate, peer_id })
 }
 
-/// A throw-away identity (tests run host and guest in one process).
-#[cfg(test)]
+/// A throw-away identity: the TURN check, and tests that run host and guest in one process.
 pub fn ephemeral() -> Identity {
     let provider = crypto::default_provider().unwrap();
     let params = rcgen::CertificateParams::new(vec!["trax".to_string()]).unwrap();

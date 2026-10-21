@@ -76,6 +76,12 @@ export component PlaylistPage inherits Rectangle {
                     font-size: 12px;
                     color: Theme.on-surface-variant;
                 }
+                if Backend.offline-status != "" || (Backend.playlist-offline && Backend.playlist-editable): Text {
+                    text: Backend.offline-status != "" ? Backend.offline-status : "Kept offline";
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: Theme.primary;
+                }
                 HorizontalLayout {
                     spacing: 8px;
                     alignment: start;
@@ -102,6 +108,14 @@ export component PlaylistPage inherits Rectangle {
                             Backend.edit-playlist-begin();
                             Ui.dialog = 6;
                         }
+                    }
+                    if Backend.playlist-editable: IconButton {
+                        icon: Icons.download;
+                        active: Backend.playlist-offline;
+                        tooltip: Backend.playlist-offline
+                            ? "Stop keeping offline"
+                            : "Keep offline (download every song)";
+                        clicked => { Backend.set-playlist-offline(!Backend.playlist-offline); }
                     }
                     if Backend.playlist-editable: IconButton {
                         icon: Icons.upload;

@@ -34,6 +34,10 @@ mod party_app;
 mod update;
 #[path = "app_theme.rs"]
 mod theme;
+#[path = "app_offline.rs"]
+mod offline;
+#[path = "app_lyrics.rs"]
+mod lyrics_ui;
 
 const TICK: Duration = Duration::from_millis(250);
 
@@ -46,6 +50,16 @@ fn ready_file(t: &Track) -> Option<PathBuf> {
         SourceKind::SoundCloud => return soundcloud::cached(&t.uri),
     };
     (t.source.is_on_disk() || p.exists()).then_some(p)
+}
+
+/// Where a remote track's download lives in the cache (None for files on this PC).
+fn cache_file(t: &Track) -> Option<PathBuf> {
+    match t.source {
+        SourceKind::Local | SourceKind::File => None,
+        SourceKind::Nextcloud => Some(nextcloud::cache_path(&t.uri)),
+        SourceKind::YouTube => Some(youtube::cache_path(&t.uri)),
+        SourceKind::SoundCloud => Some(soundcloud::cache_path(&t.uri)),
+    }
 }
 
 /// Download a remote track into the cache.
@@ -137,6 +151,8 @@ pub struct App {
     edit_cover: Option<Option<String>>,
     /// Remote tracks currently being preloaded.
     prefetching: Arc<Mutex<HashSet<String>>>,
+    /// A download run for the playlists kept offline is in progress.
+    offline_busy: bool,
     favorites: crate::ui_models::Favorites,
     spectrum: Rc<VecModel<f32>>,
     spectrum_peaks: Rc<VecModel<f32>>,
@@ -148,6 +164,13 @@ pub struct App {
     /// Position to continue from when the restored song is first played.
     resume_pos: Option<Duration>,
     ticks: u32,
+    /// Lyrics of the song that is playing and the song they belong to.
+    lyrics: crate::lyrics::Lyrics,
+    lyrics_key: String,
+    lyrics_index: i32,
+    lyrics_fetching: Arc<Mutex<HashSet<String>>>,
+    /// Tracks whose loudness is being measured for volume normalization.
+    loudness_busy: Arc<Mutex<HashSet<String>>>,
 }
 
 thread_local! {
@@ -186,7 +209,19 @@ fn eq_preset_name(index: i32) -> &'static str {
     if index <= 0 { "Custom" } else { eq::PRESETS.get(index as usize - 1).map(|(n, _)| *n).unwrap_or("Custom") }
 }
 
+/// How long the launch animation runs; the timeline in `ui/splash.slint` is as long.
+const SPLASH: Duration = Duration::from_millis(2200);
+
 pub fn run(db: Db, files: Vec<PathBuf>) -> anyhow::Result<()> {
+    // Up before anything else, so there is something to look at while the library opens.
+    let splash = match db.setting_bool("splash", true) {
+        true => crate::SplashWindow::new().map_err(|e| log::error!("launch animation failed: {e}")).ok(),
+        false => None,
+    };
+    if let Some(sp) = &splash {
+        sp.set_version(s(concat!("v", env!("CARGO_PKG_VERSION"))));
+        let _ = sp.show();
+    }
     let window = AppWindow::new()?;
     let popup = TrayPopup::new()?;
     let images = Rc::new(ImageCache::default());
@@ -258,6 +293,12 @@ pub fn run(db: Db, files: Vec<PathBuf>) -> anyhow::Result<()> {
         edit: EditTarget::None,
         edit_cover: None,
         prefetching: Arc::new(Mutex::new(HashSet::new())),
+        offline_busy: false,
+        lyrics: Default::default(),
+        lyrics_key: String::new(),
+        lyrics_index: -1,
+        lyrics_fetching: Arc::new(Mutex::new(HashSet::new())),
+        loudness_busy: Arc::new(Mutex::new(HashSet::new())),
     };
 
     let window = app.window.clone_strong();
@@ -280,9 +321,41 @@ pub fn run(db: Db, files: Vec<PathBuf>) -> anyhow::Result<()> {
         slint::CloseRequestResponse::HideWindow
     });
 
-    window.show()?;
+    // The window appears once the launch animation is over.
+    let open_window = move || {
+        if let Err(e) = window.show() {
+            log::error!("cannot show the window: {e}");
+        }
+        start_window(files);
+    };
+    match splash {
+        Some(sp) => slint::Timer::single_shot(SPLASH, move || {
+            let _ = sp.hide();
+            open_window();
+        }),
+        None => open_window(),
+    }
 
-    // Things that need a live event loop / native window.
+    // Later starts hand their files to this instance.
+    crate::instance::listen(|files| post(move |a| a.open_files(files)));
+
+    slint::run_event_loop_until_quit()?;
+    crate::instance::release();
+
+    with_app(|a| {
+        // End or leave a running party first (a guest gets its own queue back).
+        a.party_leave(None);
+        a.finish_listening();
+        a.save_session();
+    });
+    // Release the database before an update starts the new version.
+    APP.with(|cell| drop(cell.borrow_mut().take()));
+    crate::updater::run_after_exit();
+    Ok(())
+}
+
+/// Everything that needs a live event loop and a native window.
+fn start_window(files: Vec<PathBuf>) {
     slint::Timer::single_shot(Duration::from_millis(50), move || {
         with_app(|a| {
             let scale = a.window.window().scale_factor() as f64;
@@ -307,22 +380,6 @@ pub fn run(db: Db, files: Vec<PathBuf>) -> anyhow::Result<()> {
             a.party_debug_autostart();
         });
     });
-    // Later starts hand their files to this instance.
-    crate::instance::listen(|files| post(move |a| a.open_files(files)));
-
-    slint::run_event_loop_until_quit()?;
-    crate::instance::release();
-
-    with_app(|a| {
-        // End or leave a running party first (a guest gets its own queue back).
-        a.party_leave(None);
-        a.finish_listening();
-        a.save_session();
-    });
-    // Release the database before an update starts the new version.
-    APP.with(|cell| drop(cell.borrow_mut().take()));
-    crate::updater::run_after_exit();
-    Ok(())
 }
 
 impl App {
@@ -421,9 +478,14 @@ impl App {
             b.set_resume_enabled(db.setting_bool("resume_enabled", true));
             b.set_sections_enabled(db.setting_bool("sections", true));
             b.set_cache_limit_mb(db.setting_or("cache_limit_mb", "4096").parse().unwrap_or(4096));
+            b.set_offline_all(db.setting_bool("offline_all", false));
             b.set_fs_background(db.setting_or("fs_background", "0").parse().unwrap_or(0));
             b.set_visual_style(db.setting_or("visual_style", "0").parse().unwrap_or(0));
+            b.set_lyrics_enabled(db.setting_bool("lyrics", true));
+            b.set_normalize_enabled(db.setting_bool("normalize", false));
+            b.set_splash_enabled(db.setting_bool("splash", true));
         }
+        self.update_normalize_info();
         let low_end = self.db.lock().unwrap().setting_bool("low_end", false);
         self.set_low_end(low_end);
         let visualizer = self.db.lock().unwrap().setting_bool("visualizer", false);
@@ -433,6 +495,7 @@ impl App {
         self.load_appearance();
         self.apply_theme();
         self.trim_cache();
+        self.sync_offline();
         self.check_ytdlp();
         self.load_update_settings();
         self.load_party_settings();
@@ -616,6 +679,7 @@ impl App {
     fn reload_playlist_view(&self) {
         let mut cover = None;
         let mut description = String::new();
+        let mut offline = false;
         let (name, subtitle, editable, tracks) = match &self.view {
             PlaylistView::User(id) => {
                 let db = self.db.lock().unwrap();
@@ -623,6 +687,7 @@ impl App {
                 let info = db.playlist(*id);
                 cover = info.as_ref().and_then(|p| p.cover.as_deref()).and_then(ImageCache::full);
                 description = info.as_ref().map(|p| p.description.clone()).unwrap_or_default();
+                offline = info.as_ref().is_some_and(|p| p.offline);
                 (info.map(|p| p.name).unwrap_or_default(), String::new(), true, tracks)
             }
             PlaylistView::Auto(key) => {
@@ -646,6 +711,7 @@ impl App {
         let fav_id = self.db.lock().unwrap().favorites_id().ok();
         b.set_playlist_favorites(matches!(self.view, PlaylistView::User(id) if Some(id) == fav_id));
         b.set_playlist_description(s(description));
+        b.set_playlist_offline(offline);
         b.set_playlist_has_cover(cover.is_some());
         b.set_playlist_cover(cover.unwrap_or_default());
         b.set_playlist_id(match &self.view {
@@ -853,16 +919,19 @@ impl App {
 
     fn load_file(&mut self, token: u64, path: PathBuf, crossfade: bool) {
         self.set_loading(false);
-        let Some(audio) = &mut self.audio else {
+        if self.audio.is_none() {
             self.toast("No audio output device available");
             return;
-        };
+        }
         let b = self.window.global::<Backend>();
         let fade = Duration::from_secs_f32(b.get_crossfade_secs());
         let curve = crate::player::FadeCurve::from_int(b.get_crossfade_curve());
         // Least-recently-played cache eviction keys off the file time.
         connectors::cache::touch(&path);
-        let res = if crossfade { audio.crossfade_to(&path, fade, curve) } else { audio.load(&path) };
+        let path_for_loudness = path.clone();
+        let gain = self.queue.current().map(|t| self.track_gain(t)).unwrap_or(1.0);
+        let Some(audio) = &mut self.audio else { return };
+        let res = if crossfade { audio.crossfade_to(&path, fade, curve, gain) } else { audio.load(&path, gain) };
         match res {
             Ok(dur) => {
                 if let Some(d) = dur {
@@ -929,6 +998,8 @@ impl App {
         self.prefetch_next();
         if let Some(t) = self.queue.current().cloned() {
             self.auto_metadata_for(&t);
+            self.ensure_loudness(&t, path_for_loudness);
+            self.update_normalize_info();
         }
     }
 
@@ -967,6 +1038,17 @@ impl App {
             let t = &self.queue.tracks[i % len];
             if ready_file(t).is_none() && self.prefetching.lock().unwrap().insert(t.uri.clone()) {
                 todo.push(t.clone());
+            }
+        }
+        // Songs that are already on disk can be measured for normalization ahead of time.
+        for step in 1..=AHEAD.min(len.saturating_sub(1)) {
+            let i = cur + step;
+            if i >= len && !wrap {
+                break;
+            }
+            let t = self.queue.tracks[i % len].clone();
+            if let Some(path) = ready_file(&t) {
+                self.ensure_loudness(&t, path);
             }
         }
         if todo.is_empty() {
@@ -1017,6 +1099,7 @@ impl App {
 
         self.update_fullscreen_art();
         self.mark_playing();
+        self.load_lyrics(t);
     }
 
     fn stop(&mut self) {
@@ -1214,6 +1297,14 @@ impl App {
         }
     }
 
+    /// Highlight the lyric line that belongs to the position (called from the tick).
+    fn update_lyrics(&mut self) {
+        if self.lyrics.synced {
+            let pos = self.audio.as_ref().map(|a| a.position().as_millis() as i64).unwrap_or(0);
+            self.update_lyrics_line(pos);
+        }
+    }
+
     fn update_tray(&self) {
         // The UI state, not the audio device: during a pause fade-out the audio still runs.
         let playing = self.backend().get_playing();
@@ -1287,6 +1378,7 @@ impl App {
         self.party_tick();
         self.update_narrow_nav();
         self.update_position();
+        self.update_lyrics();
         // Save the resume point every 10 seconds while playing.
         self.ticks = self.ticks.wrapping_add(1);
         if self.ticks % 40 == 0 && self.backend().get_playing() {
@@ -1385,6 +1477,12 @@ impl App {
             log::debug!("window {width:.0} px wide: narrow layout {narrow}");
             self.backend().set_narrow_nav(narrow);
         }
+        // The player bar needs its own threshold: it spans the whole window, and the sidebar
+        // setting says nothing about how much room its right-hand buttons have.
+        let narrow_player = width > 0.0 && width < 920.0;
+        if self.backend().get_narrow_player() != narrow_player {
+            self.backend().set_narrow_player(narrow_player);
+        }
     }
 
     fn update_nav_buttons(&self) {
@@ -1443,6 +1541,7 @@ impl App {
             self.refresh_queue();
             self.prefetch_next();
         }
+        let added = res.is_ok();
         match res {
             Ok(name) if queued => self.toast(format!("Added to {name} and the queue")),
             Ok(name) => self.toast(format!("Added to {name}")),
@@ -1454,6 +1553,11 @@ impl App {
         }
         if t.source.is_online() {
             self.library_dirty = true;
+        }
+        // A playlist kept offline downloads what was just added to it.
+        let offline = self.db.lock().unwrap().playlist(playlist).is_some_and(|p| p.offline);
+        if added && offline {
+            self.sync_offline();
         }
     }
 
@@ -1794,24 +1898,51 @@ impl App {
         let _ = std::process::Command::new(cmd).arg(dir).spawn();
     }
 
-    fn clear_cache(&mut self) {
-        let current = self.queue.current().map(|t| match t.source {
-            SourceKind::Nextcloud => nextcloud::cache_path(&t.uri),
-            SourceKind::YouTube => youtube::cache_path(&t.uri),
-            SourceKind::SoundCloud => soundcloud::cache_path(&t.uri),
-            SourceKind::Local | SourceKind::File => PathBuf::new(),
-        });
+    /// Figures for the "clear audio cache" dialog.
+    fn prepare_clear_cache(&self) {
+        let keep = self.offline_pins();
+        let (bytes, files, pinned) = connectors::cache::usage(&keep);
+        let lists = self.db.lock().unwrap().playlists().iter().filter(|p| p.offline).count();
+        let total = connectors::cache::format_size(bytes + pinned);
+        let b = self.backend();
+        b.set_cache_offline_count(lists as i32);
+        b.set_cache_clear_info(s(if lists == 0 {
+            format!("{files} downloaded songs ({total}) will be removed. Your library and playlists stay as they are.")
+        } else {
+            format!(
+                "{files} downloaded songs ({total}) are on disk. {} of that belongs to {lists} playlist{} kept offline.",
+                connectors::cache::format_size(pinned),
+                if lists == 1 { "" } else { "s" }
+            )
+        }));
+    }
+
+    /// Delete the downloaded songs. With `include_offline`, the playlists kept offline lose
+    /// their downloads too and stop being kept offline.
+    fn clear_cache(&mut self, include_offline: bool) {
+        let current = self.queue.current().and_then(cache_file);
+        let keep = if include_offline { HashSet::new() } else { self.offline_pins() };
         let mut freed = 0u64;
         if let Ok(entries) = std::fs::read_dir(paths::cache_dir()) {
             for e in entries.filter_map(|e| e.ok()) {
-                if Some(e.path()) == current {
+                let path = e.path();
+                if Some(&path) == current.as_ref() || keep.contains(&path) {
                     continue;
                 }
                 freed += e.metadata().map(|m| m.len()).unwrap_or(0);
-                let _ = std::fs::remove_file(e.path());
+                let _ = std::fs::remove_file(&path);
+            }
+        }
+        if include_offline {
+            // Without this the playlists would download themselves again straight away.
+            let cleared = self.db.lock().unwrap().clear_offline_playlists().unwrap_or(0);
+            if cleared > 0 {
+                self.refresh_playlists();
+                self.reload_playlist_view();
             }
         }
         self.toast(format!("Freed {:.1} MB", freed as f64 / 1_048_576.0));
+        self.trim_cache();
     }
 
     // ------------------------------------------------------------------ tray popup
@@ -2043,6 +2174,24 @@ fn wire_callbacks(window: &AppWindow) {
     b.on_set_visualizer(|on| {
         with_app(|a| a.set_visualizer(on));
     });
+    b.on_set_normalize(|on| {
+        with_app(|a| a.set_normalize(on));
+    });
+    b.on_set_lyrics_enabled(|on| {
+        with_app(|a| a.set_lyrics_enabled(on));
+    });
+    b.on_refresh_lyrics(|| {
+        with_app(|a| a.refresh_lyrics());
+    });
+    b.on_seek_to_line(|i| {
+        with_app(|a| a.seek_to_lyric(i));
+    });
+    b.on_set_splash(|on| {
+        with_app(|a| {
+            a.backend().set_splash_enabled(on);
+            a.db.lock().unwrap().set_setting_bool("splash", on);
+        });
+    });
     b.on_set_low_end(|on| {
         with_app(|a| a.set_low_end(on));
     });
@@ -2212,7 +2361,7 @@ fn wire_callbacks(window: &AppWindow) {
     });
     b.on_queue_move(|from, to| {
         with_app(|a| {
-            if a.party_intercept(party_app::Intercept::QueueEdit) {
+            if a.party_intercept(party_app::Intercept::QueueMove(from as usize, to as usize)) {
                 a.refresh_queue();
                 return;
             }
@@ -2726,8 +2875,21 @@ fn wire_callbacks(window: &AppWindow) {
     b.on_open_data_dir(|| {
         with_app(|a| a.open_data_dir());
     });
-    b.on_clear_cache(|| {
-        with_app(|a| a.clear_cache());
+    b.on_prepare_clear_cache(|| {
+        with_app(|a| a.prepare_clear_cache());
+    });
+    b.on_clear_cache(|include_offline| {
+        with_app(|a| a.clear_cache(include_offline));
+    });
+    b.on_set_offline_all(|on| {
+        with_app(|a| a.set_offline_all(on));
+    });
+    b.on_set_playlist_offline(|on| {
+        with_app(|a| {
+            if let PlaylistView::User(id) = a.view {
+                a.set_playlist_offline(id, on);
+            }
+        });
     });
     b.on_toggle_fullscreen(|| {
         with_app(|a| {

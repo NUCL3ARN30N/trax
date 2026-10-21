@@ -5,7 +5,7 @@ use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use std::path::Path;
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 6;
 
 pub struct Db {
     conn: Connection,
@@ -20,6 +20,8 @@ pub struct PlaylistInfo {
     pub duration_ms: i64,
     /// The built-in "Favourites" playlist (starred tracks).
     pub favorites: bool,
+    /// Downloads of this playlist's songs are kept and never evicted from the cache.
+    pub offline: bool,
 }
 
 pub struct AutoPlaylist {
@@ -178,6 +180,31 @@ impl Db {
                  ALTER TABLE playlists ADD COLUMN kind TEXT NOT NULL DEFAULT 'user';",
             )?;
         }
+        if version < 5 {
+            // "Keep offline": the playlist's remote songs are downloaded and pinned in the cache.
+            self.conn
+                .execute_batch("ALTER TABLE playlists ADD COLUMN offline INTEGER NOT NULL DEFAULT 0;")?;
+        }
+        if version < 6 {
+            // Lyrics (from LRCLIB) and measured loudness, both cached per song so they are
+            // fetched or computed once. An empty lyrics row means "looked, found nothing".
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS lyrics (
+                    key TEXT PRIMARY KEY,
+                    synced TEXT NOT NULL DEFAULT '',
+                    plain TEXT NOT NULL DEFAULT '',
+                    instrumental INTEGER NOT NULL DEFAULT 0,
+                    updated_at INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS loudness (
+                    source TEXT NOT NULL,
+                    uri TEXT NOT NULL,
+                    lufs REAL NOT NULL,
+                    updated_at INTEGER NOT NULL,
+                    PRIMARY KEY (source, uri)
+                );",
+            )?;
+        }
         self.conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
         Ok(())
     }
@@ -209,6 +236,54 @@ impl Db {
 
     pub fn set_setting_bool(&self, key: &str, value: bool) {
         self.set_setting(key, if value { "1" } else { "0" });
+    }
+
+    // ---------- lyrics and loudness ----------
+
+    /// Cached lyrics for a song: (synced LRC, plain text, instrumental, when it was fetched).
+    pub fn lyrics(&self, key: &str) -> Option<(String, String, bool, i64)> {
+        self.conn
+            .query_row(
+                "SELECT synced, plain, instrumental, updated_at FROM lyrics WHERE key = ?1",
+                [key],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0, r.get(3)?)),
+            )
+            .optional()
+            .ok()
+            .flatten()
+    }
+
+    /// Store what a lookup returned; empty strings record that nothing was found.
+    pub fn set_lyrics(&self, key: &str, synced: &str, plain: &str, instrumental: bool) {
+        let _ = self.conn.execute(
+            "INSERT INTO lyrics(key, synced, plain, instrumental, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)
+             ON CONFLICT(key) DO UPDATE SET synced = ?2, plain = ?3, instrumental = ?4, updated_at = ?5",
+            params![key, synced, plain, instrumental as i64, now()],
+        );
+    }
+
+    pub fn forget_lyrics(&self, key: &str) {
+        let _ = self.conn.execute("DELETE FROM lyrics WHERE key = ?1", [key]);
+    }
+
+    /// Measured loudness of a track in LUFS.
+    pub fn loudness(&self, source: &str, uri: &str) -> Option<f32> {
+        self.conn
+            .query_row("SELECT lufs FROM loudness WHERE source = ?1 AND uri = ?2", params![source, uri], |r| {
+                r.get::<_, f64>(0)
+            })
+            .optional()
+            .ok()
+            .flatten()
+            .map(|v| v as f32)
+    }
+
+    pub fn set_loudness(&self, source: &str, uri: &str, lufs: f32) {
+        let _ = self.conn.execute(
+            "INSERT INTO loudness(source, uri, lufs, updated_at) VALUES (?1, ?2, ?3, ?4)
+             ON CONFLICT(source, uri) DO UPDATE SET lufs = ?3, updated_at = ?4",
+            params![source, uri, lufs as f64, now()],
+        );
     }
 
     // ---------- tracks ----------
@@ -536,7 +611,7 @@ impl Db {
 
     pub fn playlists(&self) -> Vec<PlaylistInfo> {
         let Ok(mut stmt) = self.conn.prepare(
-            "SELECT p.id, p.name, COUNT(pt.track_id), p.description, p.cover, COALESCE(SUM(t.duration_ms), 0), p.kind
+            "SELECT p.id, p.name, COUNT(pt.track_id), p.description, p.cover, COALESCE(SUM(t.duration_ms), 0), p.kind, p.offline
              FROM playlists p
              LEFT JOIN playlist_tracks pt ON pt.playlist_id = p.id
              LEFT JOIN tracks t ON t.id = pt.track_id
@@ -553,6 +628,7 @@ impl Db {
                 cover: r.get(4)?,
                 duration_ms: r.get(5)?,
                 favorites: r.get::<_, String>(6)? == "favorites",
+                offline: r.get::<_, i64>(7)? != 0,
             })
         })
             .map(|rows| rows.filter_map(|r| r.ok()).collect())
@@ -567,11 +643,13 @@ impl Db {
             .flatten()
     }
 
+    /// New playlists start out kept offline while the "always keep offline" setting is on.
     pub fn create_playlist(&self, name: &str) -> Result<i64> {
         let ts = now();
+        let offline = self.setting_bool("offline_all", false);
         self.conn.execute(
-            "INSERT INTO playlists(name, created_at, updated_at) VALUES (?1, ?2, ?2)",
-            params![name, ts],
+            "INSERT INTO playlists(name, created_at, updated_at, offline) VALUES (?1, ?2, ?2, ?3)",
+            params![name, ts, offline as i64],
         )?;
         Ok(self.conn.last_insert_rowid())
     }
@@ -646,6 +724,39 @@ impl Db {
             params![track_id, start_ms.max(0), end_ms.max(0)],
         )?;
         Ok(())
+    }
+
+    // ---------- keep offline ----------
+
+    pub fn set_playlist_offline(&self, id: i64, on: bool) -> Result<()> {
+        self.conn.execute(
+            "UPDATE playlists SET offline = ?2, updated_at = ?3 WHERE id = ?1",
+            params![id, on as i64, now()],
+        )?;
+        Ok(())
+    }
+
+    /// Every track of every playlist kept offline, each one once.
+    pub fn offline_tracks(&self) -> Vec<Track> {
+        self.query_tracks(
+            &format!(
+                "SELECT DISTINCT {TRACK_COLS} FROM playlist_tracks pt
+                 JOIN playlists p ON p.id = pt.playlist_id
+                 JOIN tracks t ON t.id = pt.track_id
+                 WHERE p.offline = 1"
+            ),
+            [],
+        )
+    }
+
+    /// Keep every playlist offline. Returns how many changed.
+    pub fn set_all_playlists_offline(&self) -> Result<usize> {
+        Ok(self.conn.execute("UPDATE playlists SET offline = 1 WHERE offline = 0", [])?)
+    }
+
+    /// Stop keeping every playlist offline. Returns how many were kept offline.
+    pub fn clear_offline_playlists(&self) -> Result<usize> {
+        Ok(self.conn.execute("UPDATE playlists SET offline = 0 WHERE offline = 1", [])?)
     }
 
     pub fn playlist_tracks(&self, id: i64) -> Vec<Track> {
@@ -882,5 +993,63 @@ impl Db {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    fn track(db: &Db, source: SourceKind, uri: &str) -> i64 {
+        db.upsert_track(&Track::new(source, uri), true).unwrap()
+    }
+
+    #[test]
+    fn offline_playlists() {
+        let db = Db::open(Path::new(":memory:")).unwrap();
+        let yt = track(&db, SourceKind::YouTube, "video1");
+        let nc = track(&db, SourceKind::Nextcloud, "/Music/a.mp3");
+        let local = track(&db, SourceKind::Local, r"D:\Music\b.mp3");
+
+        let kept = db.create_playlist("Road trip").unwrap();
+        db.add_to_playlist(kept, &[yt, nc, local]).unwrap();
+        let other = db.create_playlist("Streaming only").unwrap();
+        db.add_to_playlist(other, &[yt]).unwrap();
+
+        // Nothing is kept offline until it is switched on.
+        assert!(db.offline_tracks().is_empty());
+        assert!(!db.playlist(kept).unwrap().offline);
+
+        db.set_playlist_offline(kept, true).unwrap();
+        assert!(db.playlist(kept).unwrap().offline);
+        let ids: HashSet<i64> = db.offline_tracks().iter().map(|t| t.id).collect();
+        assert_eq!(ids, HashSet::from([yt, nc, local]), "every source of the playlist counts");
+
+        // A song in two playlists is listed once.
+        db.set_playlist_offline(other, true).unwrap();
+        assert_eq!(db.offline_tracks().iter().filter(|t| t.id == yt).count(), 1);
+
+        assert_eq!(db.clear_offline_playlists().unwrap(), 2);
+        assert!(db.offline_tracks().is_empty());
+    }
+
+    /// With "always keep playlists offline" on, playlists made later are kept offline too.
+    #[test]
+    fn offline_all_applies_to_new_playlists() {
+        let db = Db::open(Path::new(":memory:")).unwrap();
+        let before = db.create_playlist("Made earlier").unwrap();
+        assert!(!db.playlist(before).unwrap().offline);
+
+        db.set_setting_bool("offline_all", true);
+        db.set_all_playlists_offline().unwrap();
+        let after = db.create_playlist("Made later").unwrap();
+        assert!(db.playlist(before).unwrap().offline);
+        assert!(db.playlist(after).unwrap().offline);
+
+        db.set_setting_bool("offline_all", false);
+        db.clear_offline_playlists().unwrap();
+        let last = db.create_playlist("Made last").unwrap();
+        assert!(!db.playlist(last).unwrap().offline);
     }
 }

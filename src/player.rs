@@ -151,13 +151,15 @@ struct Deck {
     fade: Arc<FadeCtl>,
     tap: Arc<DeckTap>,
     loaded: bool,
+    /// Volume normalization for the track on this deck (1.0 = play it as it is).
+    gain: f32,
 }
 
 impl Deck {
     fn new(sink: &MixerDeviceSink) -> Deck {
         let player = RodioPlayer::connect_new(sink.mixer());
         player.pause();
-        Deck { player, fade: FadeCtl::new(), tap: DeckTap::new(), loaded: false }
+        Deck { player, fade: FadeCtl::new(), tap: DeckTap::new(), loaded: false, gain: 1.0 }
     }
 
     fn clear(&mut self) {
@@ -223,24 +225,27 @@ impl AudioOutput {
         &self.decks[self.active]
     }
 
-    /// Load a file and start playing it immediately (no crossfade).
-    pub fn load(&mut self, path: &Path) -> Result<Option<Duration>> {
+    /// Load a file and start playing it immediately (no crossfade). `gain` is the volume
+    /// normalization factor for this track.
+    pub fn load(&mut self, path: &Path, gain: f32) -> Result<Option<Duration>> {
         let decoder = open_decoder(path)?;
         let duration = decoder.total_duration();
         self.end_fade();
         let (eq, fx) = (self.eq.clone(), self.fx.clone());
+        self.decks[self.active].gain = gain;
         self.decks[self.active].start(decoder, &eq, &fx, 1.0);
         self.apply_volume();
         Ok(duration)
     }
 
     /// Start `path` on the other deck, fading it in while the current track fades out.
-    pub fn crossfade_to(&mut self, path: &Path, dur: Duration, curve: FadeCurve) -> Result<Option<Duration>> {
+    pub fn crossfade_to(&mut self, path: &Path, dur: Duration, curve: FadeCurve, gain: f32) -> Result<Option<Duration>> {
         let decoder = open_decoder(path)?;
         let duration = decoder.total_duration();
         self.end_fade();
         let next = 1 - self.active;
         let (eq, fx) = (self.eq.clone(), self.fx.clone());
+        self.decks[next].gain = gain;
         self.decks[next].start(decoder, &eq, &fx, 0.0);
         self.decks[next].fade.ramp(1.0, dur, curve);
         self.decks[self.active].fade.ramp(0.0, dur, curve);
@@ -366,11 +371,18 @@ impl AudioOutput {
         self.apply_volume();
     }
 
+    /// Volume normalization for the track that is playing (used when its loudness was only
+    /// measured after it started, and when the setting is switched on or off).
+    pub fn set_gain(&mut self, gain: f32) {
+        self.decks[self.active].gain = gain;
+        self.apply_volume();
+    }
+
     fn apply_volume(&self) {
-        // Perceptual curve: slider position -> amplitude.
+        // Perceptual curve: slider position -> amplitude, times the track's normalization.
         let amp = if self.muted { 0.0 } else { self.volume * self.volume };
         for d in &self.decks {
-            d.player.set_volume(amp);
+            d.player.set_volume(amp * d.gain);
         }
     }
 }
