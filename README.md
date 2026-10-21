@@ -97,22 +97,6 @@ Every [release](https://github.com/NUCL3ARN30N/trax/releases) has two downloads:
 - **`trax-setup-<version>.exe`**: installer for the current user (no admin rights), into `%LOCALAPPDATA%\Programs\trax`, with a Start menu entry and an uninstaller. Uninstalling keeps your library and settings.
 - **`trax-<version>-portable.zip`**: just `trax.exe`; run it from any folder.
 
-Both use the same data folder (see below), so you can switch between them.
-
-**Updates:** trax checks GitHub for a new release when it starts (Settings → System & updates, can be switched off) and shows a banner. Nothing is downloaded until you click **Update now**. The download is checked against the release's `SHA256SUMS.txt`, then trax saves your session, exits and either runs the new installer silently (installed copy) or replaces `trax.exe` in place (portable copy), and starts again.
-
-**Publishing a release** (`.github/workflows/release.yml`): bump `version` in `Cargo.toml`, commit, then push a matching tag:
-
-```bash
-git tag v0.2.0
-```
-
-```bash
-git push origin v0.2.0
-```
-
-The workflow tests and builds trax, builds the installer with [Inno Setup](https://jrsoftware.org/isinfo.php) from `installer/trax.iss`, zips the portable version, writes `SHA256SUMS.txt` and publishes the release. To build the installer locally: `iscc /DAppVersion=0.1.0 installer\trax.iss` (output in `target\installer`).
-
 ## Setting up Spotify (artist info & artwork)
 
 trax uses the Spotify Web API only to look up artist images, genres, followers and album artwork. It needs a free Spotify developer app; you don't log in to Spotify inside trax. The same steps are shown in **Settings → Artist info & artwork (Spotify)**.
