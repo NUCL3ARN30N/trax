@@ -219,6 +219,35 @@ fn eq_preset_name(index: i32) -> &'static str {
 /// How long the launch animation runs; the timeline in `ui/splash.slint` is as long.
 const SPLASH: Duration = Duration::from_millis(2200);
 
+/// Centres the launch animation on its monitor. Windows has already put it on the right
+/// one (the screen trax was started from, where the main window opens too), just not in
+/// the middle. Called right after `show`, before the first frame is drawn.
+#[cfg(windows)]
+fn center_splash(window: &slint::Window) {
+    use windows_sys::Win32::Foundation::POINT;
+    use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint};
+    let (pos, size) = (window.position(), window.size());
+    let (w, h) = (size.width as i32, size.height as i32);
+    let mid = POINT { x: pos.x + w / 2, y: pos.y + h / 2 };
+    // SAFETY: plain Win32 queries that only write into the struct passed to them.
+    let work = unsafe {
+        let monitor = MonitorFromPoint(mid, MONITOR_DEFAULTTONEAREST);
+        let mut info: MONITORINFO = std::mem::zeroed();
+        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        if GetMonitorInfoW(monitor, &mut info) == 0 {
+            return;
+        }
+        info.rcWork
+    };
+    window.set_position(slint::PhysicalPosition::new(
+        work.left + (work.right - work.left - w) / 2,
+        work.top + (work.bottom - work.top - h) / 2,
+    ));
+}
+
+#[cfg(not(windows))]
+fn center_splash(_window: &slint::Window) {}
+
 pub fn run(db: Db, files: Vec<PathBuf>) -> anyhow::Result<()> {
     // Up before anything else, so there is something to look at while the library opens.
     let splash = match db.setting_bool("splash", true) {
@@ -228,6 +257,7 @@ pub fn run(db: Db, files: Vec<PathBuf>) -> anyhow::Result<()> {
     if let Some(sp) = &splash {
         sp.set_version(s(concat!("v", env!("CARGO_PKG_VERSION"))));
         let _ = sp.show();
+        center_splash(sp.window());
     }
     let window = AppWindow::new()?;
     let popup = TrayPopup::new()?;
