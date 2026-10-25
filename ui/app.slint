@@ -11,6 +11,7 @@ import { PlaylistPage } from "pages/playlist.slint";
 import { SettingsPage } from "pages/settings.slint";
 import { ArtistPage } from "pages/artist.slint";
 import { PartyPage } from "pages/party.slint";
+import { FriendsPage, Avatar } from "pages/friends.slint";
 import { PlayerBar, QueuePanel, LyricsPanel, EqPanel, FullscreenView } from "player.slint";
 import { TrayPopup, TrayState } from "tray.slint";
 import { SplashWindow } from "splash.slint";
@@ -81,6 +82,13 @@ component Sidebar inherits Rectangle {
             text: Backend.party-mode == 0 ? "Party" : "Party · live";
             selected: Backend.page == 6;
             clicked => { Backend.navigate(6); }
+        }
+        NavItem {
+            compact: root.compact;
+            icon: Icons.person;
+            text: Backend.friend-requests.length > 0 && Backend.friends-enabled ? "Friends · new" : "Friends";
+            selected: Backend.page == 7;
+            clicked => { Backend.navigate(7); }
         }
 
         // Keeps the playlists apart from the pages above.
@@ -286,6 +294,10 @@ export component AppWindow inherits Window {
                             height: 100%;
                         }
                         if Backend.page == 6: PartyPage {
+                            width: 100%;
+                            height: 100%;
+                        }
+                        if Backend.page == 7: FriendsPage {
                             width: 100%;
                             height: 100%;
                         }
@@ -982,6 +994,47 @@ export component AppWindow inherits Window {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // A friend's party invite, or a friend asking to join yours.
+    if Backend.banner-kind != 0: Rectangle {
+        x: (root.width - self.width) / 2;
+        y: 16px;
+        width: min(root.width - 32px, banner-row.preferred-width);
+        height: 64px;
+        border-radius: Theme.radius-large;
+        background: Theme.surface-container-highest;
+        drop-shadow-blur: Theme.low-end ? 0px : 16px;
+        drop-shadow-offset-y: 4px;
+        drop-shadow-color: #00000060;
+        banner-row := HorizontalLayout {
+            padding-left: 16px;
+            padding-right: 12px;
+            spacing: 12px;
+            Avatar {
+                initials: Backend.banner-initials;
+                color-index: Backend.banner-color;
+                size: 36px;
+                y: (parent.height - self.height) / 2;
+            }
+            Text {
+                text: Backend.banner-text;
+                vertical-alignment: center;
+                overflow: elide;
+                color: Theme.on-surface;
+            }
+            M3Button {
+                y: (parent.height - self.height) / 2;
+                text: Backend.banner-kind == 1 ? "Join" : "Let in";
+                clicked => { Backend.banner-answer(true); }
+            }
+            M3Button {
+                y: (parent.height - self.height) / 2;
+                text: Backend.banner-kind == 1 ? "Dismiss" : "Decline";
+                kind: 3;
+                clicked => { Backend.banner-answer(false); }
             }
         }
     }

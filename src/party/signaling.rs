@@ -7,12 +7,14 @@
 //! once the DataChannel is open, signaling is idle.
 
 use super::code;
+use crate::net::relays::{Filters, RelayPool, now};
 use nostr::prelude::{Event, EventBuilder, FinalizeEvent, Keys, Kind, Tag};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
+#[cfg(test)]
 use std::time::Duration;
-use tokio::sync::{broadcast, mpsc};
+use tokio::sync::mpsc;
 
 pub const EVENT_KIND: u16 = 25050;
 /// Messages older (or newer) than this are ignored, so recorded traffic can't be replayed.
@@ -76,10 +78,6 @@ pub enum Incoming {
     WrongPasswordJoin { nonce: String },
     /// Our join was refused because of the password (guest side).
     AuthFailed { to: String },
-}
-
-fn now() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
 fn b64(bytes: &[u8]) -> String {
@@ -172,26 +170,35 @@ impl Room {
 pub struct Signaling {
     room: Arc<Room>,
     keys: Keys,
-    out: broadcast::Sender<String>,
-    connected: Arc<Mutex<HashSet<String>>>,
+    pool: RelayPool,
 }
 
 impl Signaling {
     /// Connect to all relays (in the background) and deliver what arrives to `incoming`.
     pub fn start(room: Room, relays: Vec<String>, incoming: mpsc::UnboundedSender<Incoming>) -> Signaling {
-        // Several TLS backends are compiled in (WebRTC and HTTP pull in different ones), so
-        // rustls needs one picked for the relay websockets.
-        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
         let room = Arc::new(room);
-        let (out, _) = broadcast::channel(64);
-        let connected = Arc::new(Mutex::new(HashSet::new()));
-        let seen_events = Arc::new(Mutex::new(HashSet::<String>::new()));
-        for url in relays {
-            let (room, rx, incoming, connected, seen) =
-                (room.clone(), out.subscribe(), incoming.clone(), connected.clone(), seen_events.clone());
-            tokio::spawn(relay_task(url, room, rx, incoming, connected, seen));
-        }
-        Signaling { room, keys: Keys::generate(), out, connected }
+        let topic = room.topic.clone();
+        let filters: Filters =
+            Arc::new(move || vec![serde_json::json!({"kinds": [EVENT_KIND], "#x": [topic], "since": now() - 30})]);
+        let (events_tx, mut events) = mpsc::unbounded_channel::<Event>();
+        let pool = RelayPool::start(relays, filters, events_tx);
+        let reader = room.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::select! {
+                    event = events.recv() => {
+                        let Some(event) = event else { return };
+                        if let Some(msg) = read_event(&reader, &event) {
+                            if incoming.send(msg).is_err() {
+                                return;
+                            }
+                        }
+                    }
+                    _ = incoming.closed() => return,
+                }
+            }
+        });
+        Signaling { room, keys: Keys::generate(), pool }
     }
 
     pub fn send(&self, env: &Envelope) {
@@ -200,106 +207,28 @@ impl Signaling {
             .tag(Tag::custom("x", [self.room.topic.clone()]))
             .finalize(&self.keys);
         match event {
-            Ok(e) => {
-                let _ = self.out.send(format!(r#"["EVENT",{}]"#, e.as_json()));
-            }
+            Ok(e) => self.pool.publish(&e),
             Err(e) => log::warn!("party: can't sign signaling event: {e}"),
         }
     }
 
     /// Relays currently connected.
     pub fn connected(&self) -> usize {
-        self.connected.lock().unwrap().len()
+        self.pool.connected()
     }
 }
 
-async fn relay_task(
-    url: String,
-    room: Arc<Room>,
-    mut out: broadcast::Receiver<String>,
-    incoming: mpsc::UnboundedSender<Incoming>,
-    connected: Arc<Mutex<HashSet<String>>>,
-    seen: Arc<Mutex<HashSet<String>>>,
-) {
-    use futures_util::{SinkExt, StreamExt};
-    use tokio_tungstenite::tungstenite::Message;
-    let mut backoff = 2;
-    loop {
-        if incoming.is_closed() {
-            return;
-        }
-        let conn = tokio::time::timeout(Duration::from_secs(10), tokio_tungstenite::connect_async(url.as_str())).await;
-        let Ok(Ok((mut ws, _))) = conn else {
-            log::info!("party: relay {url} not reachable, retrying in {backoff}s");
-            tokio::time::sleep(Duration::from_secs(backoff)).await;
-            backoff = (backoff * 2).min(30);
-            continue;
-        };
-        backoff = 2;
-        let sub = format!("trax{:08x}", rand::random::<u32>());
-        let req = serde_json::json!(["REQ", sub, {"kinds": [EVENT_KIND], "#x": [room.topic], "since": now() - 30}]);
-        if ws.send(Message::text(req.to_string())).await.is_err() {
-            continue;
-        }
-        connected.lock().unwrap().insert(url.clone());
-        loop {
-            tokio::select! {
-                msg = out.recv() => match msg {
-                    Ok(text) => {
-                        if ws.send(Message::text(text)).await.is_err() {
-                            break;
-                        }
-                    }
-                    Err(broadcast::error::RecvError::Lagged(_)) => {}
-                    Err(broadcast::error::RecvError::Closed) => {
-                        connected.lock().unwrap().remove(&url);
-                        let _ = ws.close(None).await;
-                        return;
-                    }
-                },
-                msg = ws.next() => match msg {
-                    Some(Ok(Message::Text(text))) => handle_relay_message(&text, &sub, &room, &incoming, &seen),
-                    Some(Ok(Message::Ping(p))) => {
-                        let _ = ws.send(Message::Pong(p)).await;
-                    }
-                    Some(Ok(_)) => {}
-                    _ => break,
-                },
-            }
-        }
-        connected.lock().unwrap().remove(&url);
-        tokio::time::sleep(Duration::from_secs(backoff)).await;
-    }
-}
-
-fn handle_relay_message(
-    text: &str,
-    sub: &str,
-    room: &Room,
-    incoming: &mpsc::UnboundedSender<Incoming>,
-    seen: &Mutex<HashSet<String>>,
-) {
-    let Ok(serde_json::Value::Array(parts)) = serde_json::from_str::<serde_json::Value>(text) else { return };
-    if parts.first().and_then(|v| v.as_str()) != Some("EVENT") || parts.get(1).and_then(|v| v.as_str()) != Some(sub) {
-        return;
-    }
-    let Some(raw) = parts.get(2) else { return };
-    let Ok(event) = Event::from_json(raw.to_string()) else { return };
-    // The same event arrives once per relay.
-    if !seen.lock().unwrap().insert(event.id.to_hex()) {
-        return;
-    }
-    if event.kind != Kind::Custom(EVENT_KIND) || event.verify().is_err() {
-        return;
+/// A signaling message for this room in a (verified) relay event.
+fn read_event(room: &Room, event: &Event) -> Option<Incoming> {
+    if event.kind != Kind::Custom(EVENT_KIND) {
+        return None;
     }
     let tagged = event.tags.iter().any(|t| t.as_slice().first().map(String::as_str) == Some("x")
         && t.as_slice().get(1) == Some(&room.topic));
     if !tagged {
-        return;
+        return None;
     }
-    if let Some(msg) = room.open(&event.content) {
-        let _ = incoming.send(msg);
-    }
+    room.open(&event.content)
 }
 
 #[cfg(test)]

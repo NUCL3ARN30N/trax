@@ -87,6 +87,10 @@ pub struct PeerInfo {
     pub role: Role,
     pub online: bool,
     pub caps: Vec<Cap>,
+    /// Their trax profile (public key, hex), if they proved it. Lets everyone see which
+    /// member is which friend.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub profile: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -185,7 +189,14 @@ impl RequestOp {
 pub enum GuestMsg {
     /// First message on every connection; sent again when the display name changes.
     #[serde(rename_all = "camelCase")]
-    Hello { name: String, peer_id: PeerId, protocol_version: u32 },
+    Hello {
+        name: String,
+        peer_id: PeerId,
+        protocol_version: u32,
+        /// Optional proof of the guest's trax profile (see `social::profile::party_proof`).
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        profile: String,
+    },
     #[serde(rename_all = "camelCase")]
     Request {
         op_id: String,

@@ -48,6 +48,8 @@ struct Pending {
 
 pub struct GuestRoom {
     pub me: PeerId,
+    /// Proof of our trax profile, sent with HELLO (empty without friends).
+    pub profile_proof: String,
     next_seq: Option<u64>,
     buffer: BTreeMap<u64, HostMsg>,
     gap_since: Option<Instant>,
@@ -69,6 +71,7 @@ impl GuestRoom {
     pub fn new(me: PeerId) -> GuestRoom {
         GuestRoom {
             me,
+            profile_proof: String::new(),
             next_seq: None,
             buffer: BTreeMap::new(),
             gap_since: None,
@@ -91,7 +94,12 @@ impl GuestRoom {
         self.next_seq = None;
         self.buffer.clear();
         vec![
-            GuestOut::Send(GuestMsg::Hello { name: name.into(), peer_id: self.me.clone(), protocol_version: PROTOCOL_VERSION }),
+            GuestOut::Send(GuestMsg::Hello {
+                name: name.into(),
+                peer_id: self.me.clone(),
+                protocol_version: PROTOCOL_VERSION,
+                profile: self.profile_proof.clone(),
+            }),
             GuestOut::Send(GuestMsg::ResyncRequest),
         ]
     }

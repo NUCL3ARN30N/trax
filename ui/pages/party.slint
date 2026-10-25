@@ -70,7 +70,14 @@ component PeerRow inherits Rectangle {
                 vertical-alignment: center;
                 color: root.peer.online ? Theme.on-surface : Theme.on-surface-variant;
             }
+            if root.peer.tag != "": Text {
+                text: "· " + root.peer.tag;
+                font-size: 12px;
+                vertical-alignment: center;
+                color: Theme.on-surface-variant;
+            }
             if root.peer.host: Badge { text: "Host"; strong: true; y: (parent.height - self.height) / 2; }
+            if root.peer.friend: Badge { text: "Friend"; y: (parent.height - self.height) / 2; }
             if root.peer.me: Badge { text: "You"; y: (parent.height - self.height) / 2; }
             if !root.peer.online: Badge { text: "Offline"; y: (parent.height - self.height) / 2; }
             Rectangle { horizontal-stretch: 1; }

@@ -26,7 +26,7 @@ image = { version = "0.25.10", default-features = false, features = ["jpeg", "pn
 lofty = "0.25.4"
 log = "0.4.34"
 md-5 = "0.10.6"
-nostr = { version = "0.45.5", features = ["os-rng"] }
+nostr = { version = "0.45.5", features = ["os-rng", "nip44", "nip59"] }
 percent-encoding = "2.3.2"
 pitch_shift = "2.1.0"
 rand = "0.10.3"

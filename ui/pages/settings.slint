@@ -109,6 +109,7 @@ component ToggleRow inherits HorizontalLayout {
 export component SettingsPage inherits Rectangle {
     property <int> tab: 0;
     property <bool> confirm-reset: false;
+    property <bool> confirm-reset-profile: false;
     property <string> remap-from;
     property <bool> spotify-help: Backend.sp-client-id == "";
     property <string> remap-to;
@@ -948,17 +949,70 @@ export component SettingsPage inherits Rectangle {
             }
 
             if root.tab == 2: SettingsCard {
-                title: "Listening party";
-                description: "Listen together with friends (Party in the sidebar). Peers find each other through public Nostr relays and then connect directly; there is no trax server.";
-                icon: Icons.party;
+                title: "Profile & friends";
+                description: "Your profile is unique to this trax (moved along with an export). Friends see your name, whether you're online and what you're listening to; nobody else can read it. Friends talk through the Nostr relays below, end-to-end encrypted.";
+                icon: Icons.person;
                 Field {
-                    label: "Your name";
+                    label: "Display name";
                     LineEdit {
-                        placeholder-text: "Shown to everyone in the party";
+                        placeholder-text: "Shown to friends and in parties";
                         text <=> Backend.party-name;
                         accepted => { Backend.party-save-settings(); }
                     }
                 }
+                ToggleRow {
+                    title: "Friends";
+                    description: "Keeps a connection to the relays while trax runs, so friends can reach you.";
+                    checked: Backend.friends-enabled;
+                    toggled(on) => { Backend.friends-set-enabled(on); }
+                }
+                if Backend.friends-enabled: ToggleRow {
+                    title: "Share what I'm listening to";
+                    description: "Off: friends only see that you're online.";
+                    checked: Backend.friends-share-playing;
+                    toggled(on) => { Backend.friends-share-playing = on; Backend.friends-save-prefs(); }
+                }
+                if Backend.friends-enabled: ToggleRow {
+                    title: "Appear offline";
+                    description: "Friends see you as offline. You still see them and get their invites.";
+                    checked: Backend.friends-appear-offline;
+                    toggled(on) => { Backend.friends-appear-offline = on; Backend.friends-save-prefs(); }
+                }
+                if Backend.friends-error != "": WrapText {
+                    text: Backend.friends-error;
+                    color: Theme.error;
+                }
+                HorizontalLayout {
+                    spacing: 12px;
+                    alignment: start;
+                    M3Button {
+                        text: "Save name";
+                        clicked => { Backend.party-save-settings(); }
+                    }
+                    M3Button {
+                        text: root.confirm-reset-profile ? "Click again to confirm" : "Reset profile";
+                        kind: 3;
+                        clicked => {
+                            if root.confirm-reset-profile {
+                                root.confirm-reset-profile = false;
+                                Backend.profile-reset();
+                            } else {
+                                root.confirm-reset-profile = true;
+                            }
+                        }
+                    }
+                }
+                if root.confirm-reset-profile: WrapText {
+                    text: "A new profile gets a new friend code. Your friends are removed and have to add you again.";
+                    font-size: 12px;
+                    color: Theme.error;
+                }
+            }
+
+            if root.tab == 2: SettingsCard {
+                title: "Listening party";
+                description: "Listen together with friends (Party in the sidebar). Peers find each other through public Nostr relays and then connect directly; there is no trax server. Your name is set under Profile & friends.";
+                icon: Icons.party;
                 WrapText {
                     text: "Some networks block direct connections (strict NAT). A TURN server relays the connection then; leave empty if parties work without it. The check below says which case you are in.";
                     font-size: 12px;

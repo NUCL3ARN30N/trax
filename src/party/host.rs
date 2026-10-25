@@ -44,6 +44,8 @@ struct Peer {
     name: String,
     online: bool,
     kicked: bool,
+    /// Proven profile key (hex), or empty.
+    profile: String,
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +67,8 @@ struct Pending {
 pub struct HostRoom {
     pub me: PeerId,
     pub my_name: String,
+    /// The host's own profile key (hex), or empty.
+    pub my_profile: String,
     seq: u64,
     acl_version: u64,
     acl: HashMap<PeerId, BTreeSet<Cap>>,
@@ -94,6 +98,7 @@ impl HostRoom {
         HostRoom {
             me,
             my_name: clean_name(my_name),
+            my_profile: String::new(),
             seq: 0,
             acl_version: 1,
             acl: HashMap::new(),
@@ -133,6 +138,7 @@ impl HostRoom {
             role: Role::Host,
             online: true,
             caps: Cap::ALL.to_vec(),
+            profile: self.my_profile.clone(),
         }];
         list.extend(self.peers.iter().filter(|p| !p.kicked).map(|p| PeerInfo {
             peer_id: p.id.clone(),
@@ -140,6 +146,7 @@ impl HostRoom {
             role: Role::Guest,
             online: p.online,
             caps: self.caps_of(&p.id),
+            profile: p.profile.clone(),
         }));
         list
     }
@@ -203,7 +210,7 @@ impl HostRoom {
         }
     }
 
-    fn hello(&mut self, peer: &str, name: &str, version: u32) -> Vec<Out> {
+    fn hello(&mut self, peer: &str, name: &str, version: u32, profile: String) -> Vec<Out> {
         if version != PROTOCOL_VERSION {
             return vec![Out::Disconnect(peer.into())];
         }
@@ -214,12 +221,13 @@ impl HostRoom {
             Some(p) => {
                 p.name = name;
                 p.online = true;
+                p.profile = profile;
             }
             None => {
                 if self.peers.iter().filter(|p| p.online).count() >= MAX_GUESTS {
                     return vec![Out::Disconnect(peer.into())];
                 }
-                self.peers.push(Peer { id: peer.into(), name, online: true, kicked: false });
+                self.peers.push(Peer { id: peer.into(), name, online: true, kicked: false, profile });
             }
         }
         vec![Out::All(self.snapshot())]
@@ -306,12 +314,14 @@ impl HostRoom {
         can_play: &dyn Fn(&TrackRef) -> bool,
     ) -> (Vec<Out>, Option<(Effect, String)>) {
         match msg {
-            GuestMsg::Hello { name, peer_id, protocol_version } => {
+            GuestMsg::Hello { name, peer_id, protocol_version, profile } => {
                 // The transport already checked the DTLS identity; HELLO must agree with it.
                 if peer_id != peer {
                     return (vec![Out::Disconnect(peer.into())], None);
                 }
-                (self.hello(peer, &name, protocol_version), None)
+                // A profile only counts with a valid proof for this very connection.
+                let profile = crate::social::profile::check_party_proof(&profile, peer).unwrap_or_default();
+                (self.hello(peer, &name, protocol_version, profile), None)
             }
             _ if !self.known(peer) => (vec![], None),
             GuestMsg::Ping { t0 } => (vec![Out::To(peer.into(), HostMsg::Pong { t0, host_time })], None),
@@ -658,7 +668,7 @@ mod tests {
     }
 
     fn hello(id: &str, name: &str) -> GuestMsg {
-        GuestMsg::Hello { name: name.into(), peer_id: id.into(), protocol_version: PROTOCOL_VERSION }
+        GuestMsg::Hello { name: name.into(), peer_id: id.into(), protocol_version: PROTOCOL_VERSION, profile: String::new() }
     }
 
     fn req(op_id: &str, acl: u64, op: RequestOp) -> GuestMsg {
@@ -678,6 +688,29 @@ mod tests {
 
     fn acl(r: &HostRoom) -> u64 {
         r.acl_version
+    }
+
+    #[test]
+    fn proven_profiles_reach_the_peer_list() {
+        use crate::social::profile::party_proof;
+        let mut r = HostRoom::new("host".into(), "Hank");
+        let now = Instant::now();
+        let keys = nostr::prelude::Keys::generate();
+        let with = |peer: &str, proof: String| GuestMsg::Hello {
+            name: "G".into(),
+            peer_id: peer.into(),
+            protocol_version: PROTOCOL_VERSION,
+            profile: proof,
+        };
+        r.handle("g1", with("g1", party_proof(&keys, "g1")), now, 0, &|_| true);
+        // A proof made for another connection doesn't count.
+        r.handle("g2", with("g2", party_proof(&keys, "g1")), now, 0, &|_| true);
+        r.handle("g3", hello("g3", "Old client"), now, 0, &|_| true);
+        let list = r.peer_list();
+        let profile = |id: &str| list.iter().find(|p| p.peer_id == id).unwrap().profile.clone();
+        assert_eq!(profile("g1"), keys.public_key().to_hex());
+        assert_eq!(profile("g2"), "");
+        assert_eq!(profile("g3"), "");
     }
 
     #[test]

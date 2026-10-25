@@ -66,6 +66,8 @@ pub(super) struct PartyState {
     role: PartyRole,
     code: String,
     has_password: bool,
+    /// Kept so the host can send it to friends with an invite.
+    password: String,
     phase: Phase,
     relays: usize,
     started: Instant,
@@ -198,7 +200,12 @@ impl App {
             let outs = match self.party.as_mut().map(|p| &mut p.role) {
                 Some(PartyRole::Host(room)) => room.rename_self(&name),
                 Some(PartyRole::Guest(room)) => {
-                    let msg = GuestMsg::Hello { name: name.clone(), peer_id: room.me.clone(), protocol_version: PROTOCOL_VERSION };
+                    let msg = GuestMsg::Hello {
+                        name: name.clone(),
+                        peer_id: room.me.clone(),
+                        protocol_version: PROTOCOL_VERSION,
+                        profile: room.profile_proof.clone(),
+                    };
                     self.party.as_ref().unwrap().link.broadcast(encode(&msg));
                     vec![]
                 }
@@ -206,25 +213,29 @@ impl App {
             };
             self.party_dispatch(outs);
         }
+        self.social_renamed();
         self.toast("Party settings saved");
         self.party_ui();
     }
 
-    fn party_config(&self, code: &str, password: &str) -> Config {
-        let b = self.backend();
-        let mut relays: Vec<String> = b
+    /// The Nostr relays from the settings (parties and friends use the same ones).
+    pub(super) fn relay_list(&self) -> Vec<String> {
+        let relays: Vec<String> = self
+            .backend()
             .get_party_relays()
             .lines()
             .map(|l| l.trim().to_string())
             .filter(|l| l.starts_with("wss://") || l.starts_with("ws://"))
             .collect();
-        if relays.is_empty() {
-            relays = DEFAULT_RELAYS.iter().map(|s| s.to_string()).collect();
-        }
+        if relays.is_empty() { DEFAULT_RELAYS.iter().map(|s| s.to_string()).collect() } else { relays }
+    }
+
+    fn party_config(&self, code: &str, password: &str) -> Config {
+        let b = self.backend();
         Config {
             code: code.into(),
             password: password.into(),
-            relays,
+            relays: self.relay_list(),
             turn: Turn {
                 url: b.get_party_turn_url().to_string(),
                 username: b.get_party_turn_user().to_string(),
@@ -262,6 +273,7 @@ impl App {
             }
         };
         let mut room = HostRoom::new(link.peer_id.clone(), &name);
+        room.my_profile = self.party_profile().map(|k| k.public_key().to_hex()).unwrap_or_default();
         // The party starts with whatever is playing now.
         if let Some(t) = self.queue.current().cloned() {
             room.track_started(track_ref(&t), self.party_position_ms(), self.backend().get_playing(), false);
@@ -273,6 +285,7 @@ impl App {
             role: PartyRole::Host(Box::new(room)),
             code,
             has_password: !password.is_empty(),
+            password: password.to_string(),
             phase: Phase::Live,
             relays: 0,
             started: Instant::now(),
@@ -323,13 +336,17 @@ impl App {
         }
         self.queue.set(vec![], 0);
         self.refresh_queue();
-        let room = GuestRoom::new(link.peer_id.clone());
+        let mut room = GuestRoom::new(link.peer_id.clone());
+        if let Some(keys) = self.party_profile() {
+            room.profile_proof = crate::social::profile::party_proof(&keys, &link.peer_id);
+        }
         self.party = Some(PartyState {
             id,
             link,
             role: PartyRole::Guest(Box::new(room)),
             code,
             has_password: !password.is_empty(),
+            password: password.to_string(),
             phase: Phase::Connecting,
             relays: 0,
             started: Instant::now(),
@@ -602,6 +619,20 @@ impl App {
             Some(PartyRole::Host(room)) => Some(room),
             _ => None,
         }
+    }
+
+    /// Room code and password of the party we host (for invites).
+    pub(super) fn party_hosted(&self) -> Option<(String, String)> {
+        let p = self.party.as_ref()?;
+        matches!(p.role, PartyRole::Host(_)).then(|| (p.code.clone(), p.password.clone()))
+    }
+
+    /// "hosting", "guest" or None, for presence.
+    pub(super) fn party_role_name(&self) -> Option<&'static str> {
+        self.party.as_ref().map(|p| match p.role {
+            PartyRole::Host(_) => "hosting",
+            PartyRole::Guest(_) => "guest",
+        })
     }
 
     pub(super) fn party_is_guest(&self) -> bool {
@@ -1252,6 +1283,8 @@ impl App {
                 remove: p.caps.contains(&Cap::QueueRemove),
                 reorder: p.caps.contains(&Cap::QueueMove),
                 caps_text: s(caps_text(&p.caps)),
+                friend: self.social_is_friend(&p.profile),
+                tag: s(self.social_tag(&p.profile)),
             })
             .collect();
         b.set_party_peers(ModelRc::new(VecModel::from(rows)));

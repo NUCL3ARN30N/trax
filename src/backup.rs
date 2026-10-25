@@ -119,8 +119,8 @@ mod tests {
     use std::sync::Mutex;
 
     /// Simulates moving to a new PC: export, wipe everything, import, and check that
-    /// library, edits, playlists (with description/artwork), history, settings and artwork
-    /// all come back, with file paths re-pointed at the new data folder.
+    /// library, edits, playlists (with description/artwork), history, settings, artwork, the
+    /// profile and friends all come back, with file paths re-pointed at the new data folder.
     #[test]
     fn export_import_roundtrip() {
         let dir = paths::use_test_dir().clone();
@@ -164,6 +164,16 @@ mod tests {
             .unwrap();
             db.set_setting("crossfade_secs", "3.5");
             db.set_setting("eq_custom_gains", "1,2,3,4,5,6,7,8,9,10");
+            db.set_setting("profile_secret", "secret-hex");
+            db.save_friend(&crate::social::friends::Friend {
+                pubkey: "friendkey".into(),
+                name: "Sam".into(),
+                state: crate::social::friends::State::Friend,
+                their_key: Some([3; 32]),
+                presence: None,
+                added: 1,
+                changed: 1,
+            });
         }
 
         let backup = std::env::temp_dir().join(format!("trax-test-{}.traxbak", std::process::id()));
@@ -205,6 +215,12 @@ mod tests {
         assert_eq!(db.get_setting("crossfade_secs").as_deref(), Some("3.5"));
         assert_eq!(db.get_setting("eq_custom_gains").as_deref(), Some("1,2,3,4,5,6,7,8,9,10"));
         assert_eq!(db.stats().ms_total, 60_000);
+        // The profile and the friends move along.
+        assert_eq!(db.get_setting("profile_secret").as_deref(), Some("secret-hex"));
+        let friends = db.friends();
+        assert_eq!(friends.len(), 1);
+        assert_eq!(friends[0].name, "Sam");
+        assert_eq!(friends[0].their_key, Some([3; 32]));
 
         // A rescan must not overwrite the user's edits.
         let mut rescanned = Track::new(SourceKind::Local, r"D:\Music\a.mp3");

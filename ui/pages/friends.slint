@@ -1,0 +1,397 @@
+import { ScrollView, LineEdit } from "std-widgets.slint";
+import { Theme } from "../theme.slint";
+import { Icons } from "../icons.slint";
+import { Backend, FriendItem, FriendRequestItem } from "../backend.slint";
+import { M3Button, IconButton, WrapText, SectionHeader } from "../widgets.slint";
+
+// Avatar backgrounds, picked per profile (see `AVATAR_COLORS` in app_social.rs).
+export global AvatarColors {
+    out property <[color]> list: [#5c6bc0, #26a69a, #ef6c00, #ab47bc, #43a047, #ec407a, #8d6e63, #0288d1];
+}
+
+// A circle with initials, and an online dot.
+export component Avatar inherits Rectangle {
+    in property <string> initials;
+    in property <int> color-index;
+    in property <bool> show-online: false;
+    in property <bool> online: false;
+    in property <length> size: 40px;
+    width: root.size;
+    height: root.size;
+    Rectangle {
+        border-radius: root.size / 2;
+        background: AvatarColors.list[Math.mod(root.color-index, AvatarColors.list.length)];
+        Text {
+            text: root.initials;
+            font-size: root.size * 0.38;
+            font-weight: 700;
+            color: #ffffff;
+        }
+    }
+    if root.show-online: Rectangle {
+        x: root.size - self.width + 1px;
+        y: root.size - self.height + 1px;
+        width: root.size * 0.32;
+        height: self.width;
+        border-radius: self.width / 2;
+        border-width: 2px;
+        border-color: Theme.surface-container-high;
+        background: root.online ? #4caf50 : Theme.outline;
+    }
+}
+
+component Card inherits Rectangle {
+    in property <string> title;
+    in property <string> description;
+    border-radius: Theme.radius-large;
+    background: Theme.surface-container;
+    VerticalLayout {
+        padding: 20px;
+        spacing: 12px;
+        if root.title != "": Text {
+            text: root.title;
+            font-size: 16px;
+            font-weight: 600;
+            color: Theme.on-surface;
+        }
+        if root.description != "": WrapText {
+            text: root.description;
+            font-size: 12px;
+            color: Theme.on-surface-variant;
+        }
+        @children
+    }
+}
+
+// Name with the profile tag after it, so look-alike names stay apart.
+component NameLine inherits HorizontalLayout {
+    in property <string> name;
+    in property <string> tag;
+    in property <bool> dim: false;
+    spacing: 6px;
+    alignment: start;
+    Text {
+        text: root.name;
+        font-weight: 600;
+        overflow: elide;
+        color: root.dim ? Theme.on-surface-variant : Theme.on-surface;
+    }
+    if root.tag != "": Text {
+        text: "· " + root.tag;
+        font-size: 12px;
+        vertical-alignment: center;
+        color: Theme.on-surface-variant;
+    }
+}
+
+component FriendRow inherits Rectangle {
+    in property <FriendItem> friend;
+    property <bool> more: false;
+    min-height: 64px;
+    border-radius: Theme.radius-medium;
+    background: Theme.surface-container-high;
+    VerticalLayout {
+        padding: 12px;
+        spacing: 8px;
+        HorizontalLayout {
+            spacing: 12px;
+            Avatar {
+                initials: root.friend.initials;
+                color-index: root.friend.color;
+                show-online: true;
+                online: root.friend.online;
+                y: (parent.height - self.height) / 2;
+            }
+            VerticalLayout {
+                horizontal-stretch: 1;
+                alignment: center;
+                spacing: 2px;
+                NameLine {
+                    name: root.friend.name;
+                    tag: root.friend.tag;
+                    dim: !root.friend.online;
+                }
+                Text {
+                    text: root.friend.status;
+                    font-size: 12px;
+                    overflow: elide;
+                    color: root.friend.online ? Theme.on-surface-variant : Theme.outline;
+                }
+            }
+            if root.friend.can-play: IconButton {
+                y: (parent.height - self.height) / 2;
+                icon: Icons.play;
+                tooltip: "Play this song too";
+                clicked => { Backend.friend-play(root.friend.id); }
+            }
+            if root.friend.can-invite: M3Button {
+                y: (parent.height - self.height) / 2;
+                text: "Invite";
+                kind: 1;
+                has-icon: true;
+                icon: Icons.party;
+                clicked => { Backend.friend-invite(root.friend.id); }
+            }
+            if root.friend.can-ask: M3Button {
+                y: (parent.height - self.height) / 2;
+                text: root.friend.asked ? "Asked…" : "Ask to join";
+                kind: 1;
+                enabled: !root.friend.asked;
+                clicked => { Backend.friend-ask-join(root.friend.id); }
+            }
+            IconButton {
+                y: (parent.height - self.height) / 2;
+                icon: Icons.more;
+                active: root.more;
+                tooltip: "More";
+                clicked => { root.more = !root.more; }
+            }
+        }
+        if root.more: HorizontalLayout {
+            spacing: 8px;
+            alignment: end;
+            M3Button {
+                text: "Remove friend";
+                kind: 2;
+                clicked => { root.more = false; Backend.friend-action(root.friend.id, "remove"); }
+            }
+            M3Button {
+                text: "Block";
+                kind: 3;
+                clicked => { root.more = false; Backend.friend-action(root.friend.id, "block"); }
+            }
+        }
+    }
+}
+
+component RequestRow inherits Rectangle {
+    in property <FriendRequestItem> request;
+    min-height: 56px;
+    border-radius: Theme.radius-medium;
+    background: Theme.surface-container-high;
+    HorizontalLayout {
+        padding: 12px;
+        spacing: 12px;
+        Avatar {
+            initials: root.request.initials;
+            color-index: root.request.color;
+            size: 36px;
+            y: (parent.height - self.height) / 2;
+        }
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 2px;
+            NameLine {
+                name: root.request.name;
+                tag: root.request.tag;
+            }
+            Text {
+                text: root.request.kind == 0 ? "Wants to be friends"
+                    : root.request.kind == 1 ? "Request sent, waiting for an answer" : "Blocked";
+                font-size: 12px;
+                color: Theme.on-surface-variant;
+            }
+        }
+        if root.request.kind == 0: M3Button {
+            y: (parent.height - self.height) / 2;
+            text: "Accept";
+            clicked => { Backend.friend-action(root.request.id, "accept"); }
+        }
+        if root.request.kind == 0: M3Button {
+            y: (parent.height - self.height) / 2;
+            text: "Decline";
+            kind: 2;
+            clicked => { Backend.friend-action(root.request.id, "decline"); }
+        }
+        if root.request.kind == 0: M3Button {
+            y: (parent.height - self.height) / 2;
+            text: "Block";
+            kind: 3;
+            clicked => { Backend.friend-action(root.request.id, "block"); }
+        }
+        if root.request.kind == 1: M3Button {
+            y: (parent.height - self.height) / 2;
+            text: "Cancel";
+            kind: 3;
+            clicked => { Backend.friend-action(root.request.id, "remove"); }
+        }
+        if root.request.kind == 2: M3Button {
+            y: (parent.height - self.height) / 2;
+            text: "Unblock";
+            kind: 3;
+            clicked => { Backend.friend-action(root.request.id, "unblock"); }
+        }
+    }
+}
+
+export component FriendsPage inherits Rectangle {
+    property <string> add-code;
+
+    sv := ScrollView {
+        content-width: self.visible-width;
+        content-height: content.preferred-height;
+
+        content := VerticalLayout {
+            width: sv.visible-width;
+            padding: 32px;
+            spacing: 16px;
+            alignment: start;
+
+            Text {
+                text: "Friends";
+                font-size: 32px;
+                font-weight: 700;
+                color: Theme.on-surface;
+            }
+
+            // ---- switched off
+            if !Backend.friends-enabled: Card {
+                title: "See what your friends are listening to";
+                description: "Add friends with their friend code, see what they play, invite them to your listening party or ask to join theirs. There is no trax server or account: friends talk through public Nostr relays, end-to-end encrypted, and only your friends can read what you're listening to.";
+                if Backend.party-name == "": HorizontalLayout {
+                    spacing: 8px;
+                    name-edit := LineEdit {
+                        placeholder-text: "Your display name, e.g. Alex";
+                        accepted => { Backend.party-name = self.text; Backend.party-save-settings(); }
+                    }
+                    M3Button {
+                        text: "Save name";
+                        kind: 1;
+                        enabled: name-edit.text != "";
+                        clicked => { Backend.party-name = name-edit.text; Backend.party-save-settings(); }
+                    }
+                }
+                HorizontalLayout {
+                    alignment: start;
+                    M3Button {
+                        text: "Turn on friends";
+                        has-icon: true;
+                        icon: Icons.person;
+                        enabled: Backend.party-name != "";
+                        clicked => { Backend.friends-set-enabled(true); }
+                    }
+                }
+                if Backend.friends-error != "": WrapText {
+                    text: Backend.friends-error;
+                    color: Theme.error;
+                }
+            }
+
+            // ---- your profile
+            if Backend.friends-enabled: Card {
+                HorizontalLayout {
+                    spacing: 16px;
+                    Avatar {
+                        initials: Backend.profile-initials;
+                        color-index: Backend.profile-color;
+                        size: 56px;
+                        y: (parent.height - self.height) / 2;
+                    }
+                    VerticalLayout {
+                        horizontal-stretch: 1;
+                        alignment: center;
+                        spacing: 4px;
+                        HorizontalLayout {
+                            spacing: 6px;
+                            alignment: start;
+                            Text {
+                                text: Backend.party-name;
+                                font-size: 18px;
+                                font-weight: 700;
+                                color: Theme.on-surface;
+                            }
+                            Text {
+                                text: "· " + Backend.profile-tag;
+                                vertical-alignment: center;
+                                color: Theme.on-surface-variant;
+                            }
+                        }
+                        Text {
+                            text: Backend.friends-appear-offline ? "You appear offline" : Backend.friends-status;
+                            font-size: 12px;
+                            color: Theme.on-surface-variant;
+                        }
+                    }
+                }
+                Text {
+                    text: "Your friend code";
+                    font-size: 12px;
+                    font-weight: 600;
+                    color: Theme.on-surface-variant;
+                }
+                HorizontalLayout {
+                    spacing: 12px;
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        min-height: 40px;
+                        border-radius: Theme.radius-small;
+                        background: Theme.surface-container-highest;
+                        VerticalLayout {
+                            padding: 8px;
+                            padding-left: 12px;
+                            padding-right: 12px;
+                            alignment: center;
+                            WrapText {
+                                text: Backend.profile-code;
+                                font-size: 12px;
+                                color: Theme.on-surface;
+                            }
+                        }
+                    }
+                    M3Button {
+                        y: (parent.height - self.height) / 2;
+                        text: "Copy";
+                        kind: 1;
+                        clicked => { Backend.profile-copy-code(); }
+                    }
+                }
+                WrapText {
+                    text: "Send this code to a friend. They paste it below in their trax to send you a request.";
+                    font-size: 12px;
+                    color: Theme.on-surface-variant;
+                }
+            }
+
+            // ---- add a friend
+            if Backend.friends-enabled: Card {
+                title: "Add a friend";
+                HorizontalLayout {
+                    spacing: 8px;
+                    LineEdit {
+                        placeholder-text: "Their friend code (npub1…)";
+                        text <=> root.add-code;
+                        accepted => { if Backend.friend-add(root.add-code) { root.add-code = ""; } }
+                    }
+                    M3Button {
+                        text: "Send request";
+                        has-icon: true;
+                        icon: Icons.person-add;
+                        enabled: root.add-code != "";
+                        clicked => { if Backend.friend-add(root.add-code) { root.add-code = ""; } }
+                    }
+                }
+                if Backend.friends-error != "": WrapText {
+                    text: Backend.friends-error;
+                    color: Theme.error;
+                }
+            }
+
+            if Backend.friends-enabled && Backend.friend-requests.length > 0: SectionHeader { text: "Requests"; }
+            if Backend.friends-enabled && Backend.friend-requests.length > 0: VerticalLayout {
+                spacing: 8px;
+                for r in Backend.friend-requests: RequestRow { request: r; }
+            }
+
+            if Backend.friends-enabled: SectionHeader { text: "Friends (" + Backend.friends.length + ")"; }
+            if Backend.friends-enabled && Backend.friends.length == 0: WrapText {
+                text: "No friends yet. Share your friend code, or add someone's.";
+                color: Theme.on-surface-variant;
+            }
+            if Backend.friends-enabled: VerticalLayout {
+                spacing: 8px;
+                for f in Backend.friends: FriendRow { friend: f; }
+            }
+        }
+    }
+}

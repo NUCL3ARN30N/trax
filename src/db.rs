@@ -1,11 +1,13 @@
 //! SQLite storage: library, plays, playlists, settings and artwork.
 
 use crate::model::{SourceKind, Track};
+use crate::social;
+use crate::social::friends::{Friend, State as FriendState};
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use std::path::Path;
 
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 pub struct Db {
     conn: Connection,
@@ -203,6 +205,22 @@ impl Db {
                     updated_at INTEGER NOT NULL,
                     PRIMARY KEY (source, uri)
                 );",
+            )?;
+        }
+        if version < 7 {
+            // Friends (see `social`), and the gift wraps already handled, so stored messages
+            // aren't applied again after a restart.
+            self.conn.execute_batch(
+                "CREATE TABLE IF NOT EXISTS friends (
+                    pubkey TEXT PRIMARY KEY,
+                    name TEXT NOT NULL DEFAULT '',
+                    state TEXT NOT NULL,
+                    their_key TEXT,
+                    presence TEXT,
+                    added_at INTEGER NOT NULL,
+                    changed_at INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS social_seen (id TEXT PRIMARY KEY, at INTEGER NOT NULL);",
             )?;
         }
         self.conn.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -943,6 +961,78 @@ impl Db {
         );
     }
 
+    // ---------- friends ----------
+
+    pub fn friends(&self) -> Vec<Friend> {
+        let Ok(mut st) = self
+            .conn
+            .prepare("SELECT pubkey, name, state, their_key, presence, added_at, changed_at FROM friends")
+        else {
+            return vec![];
+        };
+        st.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, i64>(5)?,
+                r.get::<_, i64>(6)?,
+            ))
+        })
+        .map(|rows| {
+            rows.filter_map(|r| r.ok())
+                .filter_map(|(pubkey, name, state, key, presence, added, changed)| {
+                    Some(Friend {
+                        pubkey,
+                        name,
+                        state: FriendState::parse(&state)?,
+                        their_key: key.as_deref().and_then(social::presence::key_from_string),
+                        presence: presence.as_deref().and_then(|p| serde_json::from_str(p).ok()),
+                        added,
+                        changed,
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+    }
+
+    pub fn save_friend(&self, f: &Friend) {
+        let _ = self.conn.execute(
+            "INSERT INTO friends(pubkey, name, state, their_key, presence, added_at, changed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+             ON CONFLICT(pubkey) DO UPDATE SET name = ?2, state = ?3, their_key = ?4, presence = ?5,
+                 added_at = ?6, changed_at = ?7",
+            params![
+                f.pubkey,
+                f.name,
+                f.state.as_str(),
+                f.their_key.as_ref().map(social::presence::key_to_string),
+                f.presence.as_ref().and_then(|p| serde_json::to_string(p).ok()),
+                f.added,
+                f.changed,
+            ],
+        );
+    }
+
+    pub fn delete_friend(&self, pubkey: &str) {
+        let _ = self.conn.execute("DELETE FROM friends WHERE pubkey = ?1", [pubkey]);
+    }
+
+    /// Remember a handled gift wrap. False if it was handled before.
+    pub fn mark_seen(&self, id: &str, now: i64) -> bool {
+        self.conn
+            .execute("INSERT OR IGNORE INTO social_seen(id, at) VALUES (?1, ?2)", params![id, now])
+            .map(|n| n == 1)
+            .unwrap_or(true)
+    }
+
+    pub fn prune_seen(&self, before: i64) {
+        let _ = self.conn.execute("DELETE FROM social_seen WHERE at < ?1", [before]);
+    }
+
     // ---------- maintenance ----------
 
     /// Write a consistent copy of the database to `dest` (used by the export).
@@ -1003,6 +1093,34 @@ mod tests {
 
     fn track(db: &Db, source: SourceKind, uri: &str) -> i64 {
         db.upsert_track(&Track::new(source, uri), true).unwrap()
+    }
+
+    #[test]
+    fn friends_and_seen() {
+        let db = Db::open(Path::new(":memory:")).unwrap();
+        let mut f = Friend {
+            pubkey: "ab".into(),
+            name: "Alex".into(),
+            state: FriendState::PendingOut,
+            their_key: None,
+            presence: None,
+            added: 1,
+            changed: 1,
+        };
+        db.save_friend(&f);
+        assert_eq!(db.friends(), vec![f.clone()]);
+        f.state = FriendState::Friend;
+        f.their_key = Some([7; 32]);
+        f.presence = Some(social::presence::Presence { name: "Alex".into(), online: true, updated: 5, ..Default::default() });
+        db.save_friend(&f);
+        assert_eq!(db.friends(), vec![f]);
+        db.delete_friend("ab");
+        assert!(db.friends().is_empty());
+
+        assert!(db.mark_seen("e1", 10));
+        assert!(!db.mark_seen("e1", 11));
+        db.prune_seen(20);
+        assert!(db.mark_seen("e1", 21));
     }
 
     #[test]

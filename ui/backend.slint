@@ -65,6 +65,41 @@ export struct PartyPeer {
     reorder: bool,
     // "Can skip · pause" / "Listening".
     caps-text: string,
+    // One of your friends (their profile is proven).
+    friend: bool,
+    // Profile tag, for members with a proven profile.
+    tag: string,
+}
+
+// A friend in the Friends list.
+export struct FriendItem {
+    id: string,
+    name: string,
+    // Short tag from the friend code, shown as "Alex · k3f9".
+    tag: string,
+    initials: string,
+    // Index into the avatar colours.
+    color: int,
+    online: bool,
+    // "Listening to Song — Artist", "Hosting a party", "Last seen 2 h ago".
+    status: string,
+    can-invite: bool,
+    can-ask: bool,
+    // A join request is waiting for their answer.
+    asked: bool,
+    // They play a YouTube / SoundCloud song you can play too.
+    can-play: bool,
+}
+
+// A friend request, or someone you blocked.
+export struct FriendRequestItem {
+    id: string,
+    name: string,
+    tag: string,
+    initials: string,
+    color: int,
+    // 0 they asked you, 1 you asked them, 2 blocked
+    kind: int,
 }
 
 // A song in the party queue.
@@ -489,6 +524,39 @@ export global Backend {
     callback party-remove-entry(string);
     // Move a song in the party queue: the song, and the one it lands after ("" = first).
     callback party-move-entry(string, string);
+
+    // ---- profile and friends
+    in property <string> profile-code;
+    in property <string> profile-tag;
+    in property <string> profile-initials;
+    in property <int> profile-color;
+    in-out property <bool> friends-enabled;
+    in-out property <bool> friends-share-playing: true;
+    in-out property <bool> friends-appear-offline;
+    // The friends service is running.
+    in property <bool> friends-running;
+    in property <string> friends-status;
+    in-out property <string> friends-error;
+    in property <[FriendItem]> friends;
+    in property <[FriendRequestItem]> friend-requests;
+    // Banner at the top: 0 none, 1 party invite, 2 join request (you host).
+    in property <int> banner-kind;
+    in property <string> banner-text;
+    in property <string> banner-initials;
+    in property <int> banner-color;
+    callback friends-set-enabled(bool);
+    callback friends-save-prefs();
+    // True when the request went out.
+    callback friend-add(string) -> bool;
+    // "accept", "decline", "remove", "block", "unblock"
+    callback friend-action(string, string);
+    callback friend-invite(string);
+    callback friend-ask-join(string);
+    callback friend-play(string);
+    callback profile-copy-code();
+    callback profile-reset();
+    // The banner's buttons: true = join / let in, false = dismiss / decline.
+    callback banner-answer(bool);
 
     // ---- playlist share codes
     in property <string> share-code;

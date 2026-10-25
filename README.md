@@ -37,6 +37,7 @@ A Material Design 3 music player written in Rust ([Slint](https://slint.dev) UI,
 - **System tray**: shows the current song. Left-click opens a mini player with prev/play/next and volume; right-click opens a menu. Closing the window keeps trax running in the tray (optional).
 - **Media keys** and the Windows media overlay (SMTC).
 - **Listening parties**: host a party with a room code (and optional password), friends join and hear the same music in sync. No server; see [Listening parties](#listening-parties).
+- **Friends**: add friends with their friend code, see what they're listening to, invite them to your party or ask to join theirs. No server or account; see [Friends](#friends).
 - **Export / import**: one `.traxbak` file holds the library, your track edits, play history, playlists (with descriptions and artwork), EQ, all settings, covers and artwork. Paths to covers/artwork are re-pointed automatically on the new PC (covered by an automated round-trip test). Import it on a new PC, then use **Re-map** if your music folder moved (e.g. `D:\Music` → `E:\Music`).
 
 ## Setting up yt-dlp
@@ -60,7 +61,7 @@ Listen together: one person hosts, everyone else hears the same song at the same
 
 **How to use it**
 
-1. Everyone sets a display name (Party page, or Settings → Sources → Listening party). It's shown to everyone in the party.
+1. Everyone sets a display name (Party page, or Settings → Sources → Profile & friends). It's shown to everyone in the party.
 2. The host opens **Party** in the sidebar, optionally enters a password, and clicks **Create party**. They get a room code like `XYAS-KDHG-ASDF` to send to friends.
 3. Guests open **Party**, enter the code (and the password if there is one), and click **Join party**.
 4. The host's music is the party's music. Whatever the host plays, skips, pauses or seeks, guests follow, and the host's queue is the party queue.
@@ -79,6 +80,30 @@ Listen together: one person hosts, everyone else hears the same song at the same
 - **Who can join:** anyone with the code (and password, if set) can join without any permissions, and the host can kick them. The password can't be changed while the party runs.
 - **Relays:** they only see encrypted messages and timing. The relay list can be changed in settings; at least one must be reachable.
 - **Low-end mode:** with the effects chain off, small drift is corrected by jumping instead of speed nudges.
+
+## Friends
+
+Friends see what you're listening to and can join your parties without passing codes around. It's off until you switch it on (**Friends** in the sidebar, or Settings → Sources → Profile & friends).
+
+**How to use it**
+
+1. Set a display name and turn on **Friends**. trax creates your profile and shows your **friend code** (`npub1…`); **Copy** it and send it to a friend.
+2. Your friend pastes it under **Add a friend** → **Send request**. You get the request under **Requests**: **Accept**, **Decline** or **Block**. Nobody becomes your friend without your yes.
+3. Each friend shows their name with a short tag (`Alex · k3f9`), whether they're online, and what they're listening to, e.g. "Listening to *Song* — *Artist*" or "Hosting a party". For YouTube / SoundCloud songs, ▶ plays the same song for you.
+4. While you host a party, **Invite** sends a friend the room code and password. They get a banner: **Join** or **Dismiss**.
+5. When a friend hosts, **Ask to join** sends them a request. They get a banner with **Let in** or **Decline**; if they let you in, you join straight away.
+6. In a party, members who are your friends get a **Friend** badge and their tag.
+
+**What friends see:** your name, whether you're online, the song you're playing (title and artist from any source, paused or not), and whether you're hosting or in a party. In Settings you can turn off **Share what I'm listening to** (friends only see that you're online) or **Appear offline**.
+
+**How it works:** there is no trax server. Your profile is a [Nostr](https://nostr.com) keypair; the friend code is its public key, so profiles are unique and can't be impersonated. Friend requests, invites and join requests are [gift-wrapped](https://github.com/nostr-protocol/nips/blob/master/59.md) messages, encrypted to the recipient, so relays see neither the sender nor the content; relays keep them for a while, so a request reaches a friend who is offline. What you're listening to is one event, encrypted with a key that only your friends get. When you remove or block a friend, trax makes a new key and gives it only to the remaining friends. Invites and join requests are only valid for 10 minutes.
+
+**Good to know**
+
+- **Relays** can see that your profile publishes something and roughly when, but not what or for whom. They are the same relays as for parties (Settings → Sources → Listening party → Relays).
+- **Your profile moves with an export** (`.traxbak`), like your other settings; treat the file as private. **Reset profile** makes a new friend code; your friends have to add you again.
+- **While friends are on**, trax keeps a connection to the relays open. It also tells party hosts which profile you are, so they can see you're their friend.
+
 
 ## Building
 
@@ -120,8 +145,9 @@ Then use **Fill missing artwork** / **Update all artists**, or open any artist p
 | Covers / artist artwork | `%APPDATA%\trax\data\covers`, `…\artwork` |
 | Streaming cache (safe to delete) | `%APPDATA%\trax\data\cache` |
 | yt-dlp (if you put it there) | `%APPDATA%\trax\data\bin` |
+| Profile and friends | in the database (`trax.db`) |
 
-Credentials (Nextcloud app password, Spotify client secret) are stored in the local database so they move with an export. Treat `.traxbak` files as private.
+Credentials (Nextcloud app password, Spotify client secret) and your profile key are stored in the local database so they move with an export. Treat `.traxbak` files as private.
 
 ## Project layout
 
@@ -151,6 +177,10 @@ src/
                    identity.rs, signaling.rs (Nostr), transport.rs (WebRTC), host.rs / guest.rs (state
                    machines), clock.rs (clock sync, drift)
   app_party.rs     party ⇄ player integration and the party page
+  net/             relays.rs: the Nostr relay pool shared by parties and friends
+  social/          friends: profile.rs (keys, friend codes), messages.rs (gift wraps), presence.rs
+                   (what you're listening to), friends.rs (friend list state machine), service.rs
+  app_social.rs    friends ⇄ app integration, presence publishing, invites and the Friends page
 about.toml, about.hbs  cargo-about configuration for THIRD_PARTY_LICENSES.txt
   app_share.rs     share and import dialogs
   connectors/      local, nextcloud, youtube, soundcloud, spotify, wikipedia

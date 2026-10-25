@@ -30,6 +30,8 @@ mod system_settings;
 mod share_ui;
 #[path = "app_party.rs"]
 mod party_app;
+#[path = "app_social.rs"]
+mod social_app;
 #[path = "app_update.rs"]
 mod update;
 #[path = "app_theme.rs"]
@@ -124,6 +126,11 @@ pub struct App {
     /// A running listening party (host or guest).
     party: Option<party_app::PartyState>,
     party_ids: u64,
+    /// Friends, while switched on.
+    social: Option<social_app::Social>,
+    social_ids: u64,
+    /// Profile keys (see `crate::social::profile`), loaded on first use.
+    profile: Option<nostr::prelude::Keys>,
     /// Set by `refresh_queue`; the party sends the change on the next tick.
     party_queue_dirty: std::cell::Cell<bool>,
     tray: Option<Tray>,
@@ -263,6 +270,9 @@ pub fn run(db: Db, files: Vec<PathBuf>) -> anyhow::Result<()> {
         update: None,
         party: None,
         party_ids: 0,
+        social: None,
+        social_ids: 0,
+        profile: None,
         party_queue_dirty: std::cell::Cell::new(false),
         tray: None,
         media: None,
@@ -345,6 +355,8 @@ pub fn run(db: Db, files: Vec<PathBuf>) -> anyhow::Result<()> {
     with_app(|a| {
         // End or leave a running party first (a guest gets its own queue back).
         a.party_leave(None);
+        // Friends see you go offline.
+        a.social_stop(true);
         a.finish_listening();
         a.save_session();
     });
@@ -376,6 +388,8 @@ fn start_window(files: Vec<PathBuf>) {
             if !files.is_empty() {
                 a.open_files(files);
             }
+            #[cfg(debug_assertions)]
+            a.social_debug_autostart();
             #[cfg(debug_assertions)]
             a.party_debug_autostart();
         });
@@ -499,6 +513,7 @@ impl App {
         self.check_ytdlp();
         self.load_update_settings();
         self.load_party_settings();
+        self.load_social_settings();
         self.load_system_integration();
     }
 
@@ -1376,6 +1391,7 @@ impl App {
             }
         }
         self.party_tick();
+        self.social_tick();
         self.update_narrow_nav();
         self.update_position();
         self.update_lyrics();
@@ -2239,6 +2255,7 @@ fn wire_callbacks(window: &AppWindow) {
         with_app(|a| a.theme_delete());
     });
     party_app::wire(&b);
+    social_app::wire(&b);
     b.on_reset_design(|| {
         with_app(|a| a.reset_design());
     });
