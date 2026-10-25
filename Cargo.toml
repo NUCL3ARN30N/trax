@@ -1,6 +1,6 @@
 [package]
 name = "trax"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 authors = ["NUCL3ARN30N"]
 description = "Material Design music player for local, Nextcloud, YouTube and SoundCloud music"
