@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=trax
+GenericName=Music Player
+Comment=Music player for local, Nextcloud, YouTube and SoundCloud music
+Exec=trax %F
+Icon=trax
+Terminal=false
+StartupWMClass=trax
+Categories=AudioVideo;Audio;Player;
+Keywords=music;player;audio;playlist;
+MimeType=audio/mpeg;audio/mp3;audio/x-mp3;audio/x-mpeg;audio/flac;audio/x-flac;audio/mp4;audio/x-m4a;audio/aac;audio/x-aac;audio/x-vorbis+ogg;audio/ogg;audio/vorbis;audio/x-wav;audio/wav;audio/vnd.wave;

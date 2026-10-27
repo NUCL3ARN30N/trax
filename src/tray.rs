@@ -36,9 +36,26 @@ fn load_icon(scale: f64) -> Result<tray_icon::Icon> {
     Ok(tray_icon::Icon::from_rgba(img.into_raw(), w, h)?)
 }
 
+/// Linux trays are StatusNotifierItems shown by whoever owns the watcher (KDE, XFCE, Cinnamon,
+/// GNOME with the AppIndicator extension). Without one an icon would be invisible, and
+/// closing to the tray would leave no way back.
+#[cfg(target_os = "linux")]
+fn tray_host_available() -> bool {
+    let check = || -> zbus::Result<bool> {
+        let conn = zbus::blocking::Connection::session()?;
+        let dbus = zbus::blocking::fdo::DBusProxy::new(&conn)?;
+        Ok(dbus.name_has_owner("org.kde.StatusNotifierWatcher".try_into()?)?)
+    };
+    check().unwrap_or(false)
+}
+
 impl Tray {
     /// Create the tray icon. `handler` is invoked on the UI thread for every action.
     pub fn new(handler: fn(TrayAction), scale: f64) -> Result<Tray> {
+        #[cfg(target_os = "linux")]
+        if !tray_host_available() {
+            anyhow::bail!("this desktop has no system tray");
+        }
         let now = MenuItem::new("Nothing playing", false, None);
         let play_pause = MenuItem::new("Play", true, None);
         let next = MenuItem::new("Next", true, None);
@@ -58,6 +75,7 @@ impl Tray {
         ])?;
 
         let icon = TrayIconBuilder::new()
+            .with_id("trax")
             .with_icon(load_icon(scale)?)
             .with_tooltip("trax")
             .with_menu(Box::new(menu))
@@ -80,8 +98,9 @@ impl Tray {
         }));
 
         TrayIconEvent::set_event_handler(Some(move |e: TrayIconEvent| match e {
-            TrayIconEvent::Click { rect, button: MouseButton::Left, button_state: MouseButtonState::Up, .. } => {
-                let (x, y) = (rect.position.x, rect.position.y);
+            TrayIconEvent::Click { rect, position, button: MouseButton::Left, button_state: MouseButtonState::Up, .. } => {
+                // On Linux only the click position is known, not the icon's rectangle.
+                let (x, y) = if rect.size.width == 0 { (position.x, position.y) } else { (rect.position.x, rect.position.y) };
                 let (w, h) = (rect.size.width as f64, rect.size.height as f64);
                 let _ = slint::invoke_from_event_loop(move || handler(TrayAction::TogglePopup { x, y, w, h }));
             }

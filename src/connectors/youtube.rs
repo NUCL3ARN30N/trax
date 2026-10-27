@@ -4,26 +4,94 @@ use super::{hidden_command, http_client, save_cover};
 use crate::model::{SourceKind, Track};
 use crate::paths;
 use anyhow::{Context, Result, bail};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
+/// What trax looks for in its yt-dlp folder: the standalone build from the yt-dlp releases
+/// for this system, or plain `yt-dlp` (renamed, or the Python zipapp).
 #[cfg(windows)]
-const BIN_NAME: &str = "yt-dlp.exe";
+const BIN_NAMES: &[&str] = &["yt-dlp.exe"];
 #[cfg(target_os = "macos")]
-const BIN_NAME: &str = "yt-dlp_macos";
+const BIN_NAMES: &[&str] = &["yt-dlp_macos", "yt-dlp"];
 #[cfg(all(unix, not(target_os = "macos")))]
-const BIN_NAME: &str = "yt-dlp_linux";
+const BIN_NAMES: &[&str] = &["yt-dlp_linux", "yt-dlp"];
 
 /// The yt-dlp binary to use: configured path, a copy the user put in trax's bin folder,
 /// or whatever is on PATH. trax never downloads yt-dlp itself.
 pub fn binary(configured: &str) -> PathBuf {
     if !configured.trim().is_empty() {
-        return PathBuf::from(configured.trim());
+        let path = PathBuf::from(configured.trim());
+        make_executable(&path);
+        return path;
     }
-    let own = paths::bin_dir().join(BIN_NAME);
-    if own.exists() {
+    let dir = paths::bin_dir();
+    if let Some(own) = BIN_NAMES.iter().map(|n| dir.join(n)).find(|p| p.is_file()) {
+        make_executable(&own);
         return own;
     }
+    // pipx and `pip install --user` put it in ~/.local/bin, which isn't always on PATH when
+    // trax is started from the app launcher.
+    #[cfg(unix)]
+    if let Some(user) = directories::BaseDirs::new().and_then(|d| d.executable_dir().map(|e| e.join("yt-dlp"))) {
+        if user.is_file() {
+            return user;
+        }
+    }
     PathBuf::from("yt-dlp")
+}
+
+/// A file saved from the browser isn't executable yet; the user picked it to run as yt-dlp.
+#[cfg(unix)]
+fn make_executable(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(meta) = std::fs::metadata(path) else { return };
+    let mode = meta.permissions().mode();
+    if meta.is_file() && mode & 0o111 == 0 {
+        match std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode | 0o111)) {
+            Ok(()) => log::info!("made {} executable", path.display()),
+            Err(e) => log::warn!("can't make {} executable: {e}", path.display()),
+        }
+    }
+}
+
+#[cfg(not(unix))]
+fn make_executable(_path: &Path) {}
+
+/// Status line when yt-dlp can't be run.
+pub fn not_found_hint(configured: &str) -> &'static str {
+    #[cfg(not(windows))]
+    {
+        let windows_build = configured.trim().to_ascii_lowercase().ends_with(".exe")
+            || (configured.trim().is_empty() && paths::bin_dir().join("yt-dlp.exe").exists());
+        if windows_build {
+            return "yt-dlp.exe is the Windows version — get yt-dlp_linux instead (see the steps above)";
+        }
+    }
+    let _ = configured;
+    "yt-dlp not found — see the steps above"
+}
+
+/// Setup steps shown in Settings → Sources; `folder` is trax's yt-dlp folder.
+#[cfg(windows)]
+pub fn setup_help(folder: &str) -> String {
+    format!(
+        "trax doesn't include or download yt-dlp. To use these sources, get yt-dlp yourself from the yt-dlp project's GitHub releases (yt-dlp.exe) and either:\n  \
+         1. put yt-dlp.exe in trax's yt-dlp folder: {folder} (\"Open yt-dlp folder\" below), or\n  \
+         2. put it anywhere and enter its full path below, or\n  \
+         3. install it so it is on your PATH (e.g. winget install yt-dlp).\n\
+         Then click Save to check it. Keep it up to date yourself (yt-dlp -U)."
+    )
+}
+
+#[cfg(not(windows))]
+pub fn setup_help(folder: &str) -> String {
+    let file = BIN_NAMES[0];
+    format!(
+        "trax doesn't include or download yt-dlp. To use these sources, get yt-dlp yourself and either:\n  \
+         1. download {file} (not yt-dlp.exe) from the yt-dlp project's GitHub releases and put it in trax's yt-dlp folder: {folder} (\"Open yt-dlp folder\" below; trax makes it executable), or\n  \
+         2. put it anywhere and enter its full path below, or\n  \
+         3. install it so it is on your PATH, e.g. pipx install yt-dlp. Distribution packages (apt install yt-dlp) are often too old for YouTube.\n\
+         Then click Save to check it. Keep it up to date yourself ({file} -U, or pipx upgrade yt-dlp)."
+    )
 }
 
 pub fn version(configured: &str) -> Option<String> {
@@ -133,6 +201,29 @@ pub fn split_video_title(title: &str, channel: &str) -> (String, String) {
 #[cfg(test)]
 mod tests {
     use super::split_video_title;
+
+    /// A yt-dlp_linux saved from the browser (not executable) is found and made executable;
+    /// the Windows build in the folder gets its own hint.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn linux_binary_in_own_folder() {
+        use std::os::unix::fs::PermissionsExt;
+        crate::paths::use_test_dir();
+        let dir = crate::paths::bin_dir();
+        let exe = dir.join("yt-dlp_linux");
+        std::fs::write(&exe, b"#!/bin/sh\necho 2099.01.01\n").unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o644)).unwrap();
+        assert_eq!(super::binary(""), exe);
+        assert_eq!(std::fs::metadata(&exe).unwrap().permissions().mode() & 0o777, 0o755);
+        assert_eq!(super::version("").as_deref(), Some("2099.01.01"));
+
+        std::fs::write(dir.join("yt-dlp.exe"), b"MZ").unwrap();
+        assert!(super::not_found_hint("").contains("Windows version"));
+        assert!(super::not_found_hint("/opt/yt-dlp.exe").contains("Windows version"));
+        std::fs::remove_file(dir.join("yt-dlp.exe")).unwrap();
+        std::fs::remove_file(&exe).unwrap();
+        assert!(super::setup_help("/x").contains("yt-dlp_linux"));
+    }
 
     #[test]
     fn video_titles() {

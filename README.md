@@ -2,7 +2,7 @@
 
 A Material Design 3 music player written in Rust ([Slint](https://slint.dev) UI, [rodio](https://github.com/RustAudio/rodio) audio). Dark and light mode, Spotify-like behaviour, one library across several sources.
 
-> Windows is supported today. Linux and macOS are planned; the code already avoids Windows-only APIs where it can (tray, media keys and paths are cross-platform crates).
+> Runs on Windows and Linux (x86-64; X11 and Wayland) from the same code, as a native binary on both. macOS is planned.
 
 ## Features
 
@@ -22,7 +22,7 @@ A Material Design 3 music player written in Rust ([Slint](https://slint.dev) UI,
 - **Visualizer**: bars in the player bar (optional); fullscreen background can be the artwork, the visualizer only, or both, in five styles (bars with falling peaks, mirror, oscilloscope wave, circle, LED blocks).
 - **Resume where you left off** (optional): the queue, the last song and its position come back after a restart.
 - **Audio cache limit**: downloaded YouTube / Nextcloud songs are kept until the limit; the least recently played are removed first.
-- **Appearance**: accent colour (palette generated from it), light / dark / system, corner style, list density, interface size, font, list columns, compact sidebar. The corner style also applies to the window corners on Windows 11 (including the tray mini player). Themes can be exported and imported as JSON (see below). **Reset to default** puts the whole design back to the defaults (saved themes are kept).
+- **Appearance**: accent colour (palette generated from it), light / dark / system, corner style, list density, interface size, font, list columns, compact sidebar. The corner style also applies to the window corners on Windows 11 (including the tray mini player); on Linux the desktop draws the window corners. Themes can be exported and imported as JSON (see below). **Reset to default** puts the whole design back to the defaults (saved themes are kept).
 - **Settings** are split into tabs: Appearance, Playback, Sources, Storage & data, Performance.
 - **Low-end mode** (Settings → Performance): turns off all animations, shadows, the loading animation, the visualizer and the sound effects to keep CPU/GPU use minimal. Options that need them are greyed out; your choices are kept and come back when you switch it off.
 - **Playlists**: create, delete, and edit on screen (drag to reorder, remove tracks, name, description, artwork). Add tracks from any list through the ⋮ menu or by right-clicking; if you're playing that playlist, the track is queued too.
@@ -33,9 +33,9 @@ A Material Design 3 music player written in Rust ([Slint](https://slint.dev) UI,
 - **Stats**: hours listened this week, this year and in total, plus your top artists this year.
 - **Search** across your library and YouTube.
 - **Fullscreen view** with artist artwork, set manually or fetched from Spotify (Esc to exit, Space to play/pause, ←/→ to skip).
-- **Default music player** (Settings → System & updates): registers trax for MP3, FLAC, M4A, AAC, OGG and WAV (per user, no admin rights) and opens Windows' Default apps, where you confirm trax. `trax.exe --register` / `--unregister` do the registration from the command line; the uninstaller removes it.
-- **System tray**: shows the current song. Left-click opens a mini player with prev/play/next and volume; right-click opens a menu. Closing the window keeps trax running in the tray (optional).
-- **Media keys** and the Windows media overlay (SMTC).
+- **Default music player** (Settings → System & updates): registers trax for MP3, FLAC, M4A, AAC, OGG and WAV (per user, no admin rights). On Windows it opens Default apps, where you confirm trax; the uninstaller removes the registration. On Linux it adds trax to your app launcher and "Open with" (a desktop entry and icon in `~/.local/share`) and makes it the default in `~/.config/mimeapps.list`. `trax --register` / `--unregister` do the registration from the command line.
+- **System tray**: shows the current song. Left-click opens a mini player with prev/play/next and volume; right-click opens a menu. Closing the window keeps trax running in the tray (optional). On Linux the icon needs a desktop with a StatusNotifier tray (KDE Plasma, XFCE, Cinnamon, Budgie, or GNOME with the AppIndicator extension, which Ubuntu has on by default); without one, closing the window quits trax. Some desktops open the menu on left-click as well.
+- **Media keys** and the Windows media overlay (SMTC); on Linux, MPRIS (media keys, the desktop's media controls, `playerctl`).
 - **Listening parties**: host a party with a room code (and optional password), friends join and hear the same music in sync. No server; see [Listening parties](#listening-parties).
 - **Friends**: add friends with their friend code, see what they're listening to, invite them to your party or ask to join theirs. No server or account; see [Friends](#friends).
 - **Export / import**: one `.traxbak` file holds the library, your track edits, play history, playlists (with descriptions and artwork), EQ, all settings, covers and artwork. Paths to covers/artwork are re-pointed automatically on the new PC (covered by an automated round-trip test). Import it on a new PC, then use **Re-map** if your music folder moved (e.g. `D:\Music` → `E:\Music`).
@@ -44,14 +44,16 @@ A Material Design 3 music player written in Rust ([Slint](https://slint.dev) UI,
 
 YouTube and SoundCloud need [yt-dlp](https://github.com/yt-dlp/yt-dlp), a separate program. trax doesn't include it and doesn't download it for you.
 
-1. Get `yt-dlp.exe` from the [yt-dlp releases](https://github.com/yt-dlp/yt-dlp/releases), or install it with `winget install yt-dlp`.
+1. Get it for your system:
+   - **Windows**: `yt-dlp.exe` from the [yt-dlp releases](https://github.com/yt-dlp/yt-dlp/releases), or `winget install yt-dlp`.
+   - **Linux** (including the .deb): `yt-dlp_linux` from the [yt-dlp releases](https://github.com/yt-dlp/yt-dlp/releases) (not `yt-dlp.exe`, which only runs on Windows), or `pipx install yt-dlp`. trax makes a downloaded `yt-dlp_linux` executable itself and also finds a pipx install in `~/.local/bin`. Distribution packages (`apt install yt-dlp`) are often too old for YouTube.
 2. Make it findable by trax, in one of these ways (checked in this order):
    - enter its full path in **Settings → Sources → yt-dlp path**,
-   - put `yt-dlp.exe` in trax's yt-dlp folder, `%APPDATA%\trax\data\bin` (**Open yt-dlp folder** in the same card opens it),
-   - or have it on your `PATH` (winget does this).
+   - put `yt-dlp.exe` / `yt-dlp_linux` in trax's yt-dlp folder, `%APPDATA%\trax\data\bin` or `~/.local/share/trax/bin` (**Open yt-dlp folder** in the same card opens it),
+   - or have `yt-dlp` on your `PATH` (winget and package managers do this).
 3. Click **Save**. The status line shows the yt-dlp version once trax finds it.
 
-Keep yt-dlp up to date yourself (`yt-dlp -U`, or `winget upgrade yt-dlp`); old versions stop working when the sites change.
+Keep yt-dlp up to date yourself (`yt-dlp -U` / `yt-dlp_linux -U`, `winget upgrade yt-dlp` or `pipx upgrade yt-dlp`); old versions stop working when the sites change.
 
 > **This project advises against using trax to stream or download copyrighted material** without the rights holder's permission. Use the online sources only for content you are allowed to access this way, and follow the terms of the services and the copyright law of your country.
 
@@ -107,20 +109,27 @@ Friends see what you're listening to and can join your parties without passing c
 
 ## Building
 
-Requirements: Rust (stable) and, on Windows, the MSVC C++ build tools.
+Requirements: Rust (stable) and, on Windows, the MSVC C++ build tools. On Linux, a C compiler, `pkg-config` and the ALSA and fontconfig headers:
+
+```bash
+sudo apt install build-essential pkg-config libasound2-dev libfontconfig1-dev   # Debian, Ubuntu
+sudo dnf install gcc pkgconf-pkg-config alsa-lib-devel fontconfig-devel         # Fedora
+```
 
 ```bash
 cargo build --release
 ```
 
-The binary is `target/release/trax.exe`.
+The binary is `target/release/trax.exe` on Windows and `target/release/trax` on Linux. X11, Wayland, OpenGL and xkbcommon are loaded at runtime, so they aren't needed to build.
 
 ## Installer, portable version and updates
 
-Every [release](https://github.com/NUCL3ARN30N/trax/releases) has two downloads:
+Every [release](https://github.com/NUCL3ARN30N/trax/releases) has four downloads:
 
-- **`trax-setup-<version>.exe`**: installer for the current user (no admin rights), into `%LOCALAPPDATA%\Programs\trax`, with a Start menu entry and an uninstaller. Uninstalling keeps your library and settings.
+- **`trax-setup-<version>.exe`**: Windows installer for the current user (no admin rights), into `%LOCALAPPDATA%\Programs\trax`, with a Start menu entry and an uninstaller. Uninstalling keeps your library and settings.
 - **`trax-<version>-portable.zip`**: just `trax.exe`; run it from any folder.
+- **`trax_<version>-1_amd64.deb`**: package for Debian 12, Ubuntu 22.04 and newer, and distributions based on them (Linux Mint, Pop!_OS, elementary OS, Zorin OS, …). Install it with `sudo apt install ./trax_<version>-1_amd64.deb` (or double-click it); trax then appears in your app launcher and in "Open with" for audio files. Updates download the new package and install it after asking for your password. Remove it with `sudo apt remove trax`; your library and settings stay.
+- **`trax-<version>-linux-x86_64.tar.gz`**: the Linux `trax` binary for other distributions, for any distribution with glibc 2.35 or newer (Ubuntu 22.04, Debian 12, Fedora 36 and later). Unpack it anywhere you can write to, e.g. `~/.local/opt/trax`, and run `trax`. **Settings → System & updates → Make trax the default player** adds it to your app launcher. It needs ALSA (`libasound2`) and fontconfig, which every desktop has; sound goes through PipeWire or PulseAudio as usual. Updates replace the binary in place, like the portable version.
 
 ## Setting up Spotify (artist info & artwork)
 
@@ -139,13 +148,15 @@ Then use **Fill missing artwork** / **Update all artists**, or open any artist p
 
 ## Where data lives
 
-| What | Windows |
-|---|---|
-| Database, settings | `%APPDATA%\trax\data\trax.db` |
-| Covers / artist artwork | `%APPDATA%\trax\data\covers`, `…\artwork` |
-| Streaming cache (safe to delete) | `%APPDATA%\trax\data\cache` |
-| yt-dlp (if you put it there) | `%APPDATA%\trax\data\bin` |
-| Profile and friends | in the database (`trax.db`) |
+| What | Windows | Linux |
+|---|---|---|
+| Database, settings | `%APPDATA%\trax\data\trax.db` | `~/.local/share/trax/trax.db` |
+| Covers / artist artwork | `%APPDATA%\trax\data\covers`, `…\artwork` | `~/.local/share/trax/covers`, `…/artwork` |
+| Streaming cache (safe to delete) | `%APPDATA%\trax\data\cache` | `~/.local/share/trax/cache` |
+| yt-dlp (if you put it there) | `%APPDATA%\trax\data\bin` | `~/.local/share/trax/bin` |
+| Profile and friends | in the database (`trax.db`) | in the database (`trax.db`) |
+
+On Linux `$XDG_DATA_HOME` replaces `~/.local/share` when it is set.
 
 Credentials (Nextcloud app password, Spotify client secret) and your profile key are stored in the local database so they move with an export. Treat `.traxbak` files as private.
 
@@ -166,11 +177,11 @@ src/
   media_keys.rs    OS media controls (souvlaki)
   ui_models.rs     lazy Slint models for track lists
   app_artists.rs   artist profiles and online metadata (Spotify, Wikipedia)
-  updater.rs       update check, download + checksum, installer / portable swap
+  updater.rs       update check, download + checksum, installer / portable / Linux swap
   app_update.rs    update UI (banner, Settings → System & updates)
   app_files.rs     songs opened from anywhere (single-file library entries)
   instance.rs      single instance: later starts hand their files to the running trax
-  system.rs        Windows file type registration (default music player)
+  system.rs        default music player: Windows registry, Linux desktop entry + mimeapps.list
   app_system.rs    default player settings
   share.rs         playlist share codes (encode / decode)
   party/           listening parties: protocol.rs (the whole wire protocol), code.rs (room codes, keys),
@@ -186,7 +197,8 @@ about.toml, about.hbs  cargo-about configuration for THIRD_PARTY_LICENSES.txt
   connectors/      local, nextcloud, youtube, soundcloud, spotify, wikipedia
 ui/                Slint UI (Material 3 theme, pages, player bar, tray popup)
 installer/         Inno Setup script for the Windows installer
-.github/workflows/ release build (installer, portable zip, checksums)
+.github/workflows/ release build (installer, portable zip, .deb, Linux tarball, checksums)
+assets/linux/      desktop entry and Debian copyright file for the .deb
 assets/logo/       trax logo: trax_wordmark.png (full logo with name), AppIcon.iconset (X mark, PNG 16–1024 px) and trax.ico (exe, window, taskbar, tray)
 ```
 

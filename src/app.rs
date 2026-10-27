@@ -223,9 +223,10 @@ const SPLASH: Duration = Duration::from_millis(2200);
 /// one (the screen trax was started from, where the main window opens too), just not in
 /// the middle. Called right after `show`, before the first frame is drawn.
 #[cfg(windows)]
-fn center_splash(window: &slint::Window) {
+fn center_splash(splash: &crate::SplashWindow) {
     use windows_sys::Win32::Foundation::POINT;
     use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromPoint};
+    let window = splash.window();
     let (pos, size) = (window.position(), window.size());
     let (w, h) = (size.width as i32, size.height as i32);
     let mid = POINT { x: pos.x + w / 2, y: pos.y + h / 2 };
@@ -245,10 +246,38 @@ fn center_splash(window: &slint::Window) {
     ));
 }
 
+/// Elsewhere the monitor's full area has to do. The native window only appears once the event
+/// loop is running, so this checks back until it is there; the animation starts on a blank
+/// frame, so the move isn't seen. Wayland compositors place windows themselves and ignore this.
 #[cfg(not(windows))]
-fn center_splash(_window: &slint::Window) {}
+fn center_splash(splash: &crate::SplashWindow) {
+    use slint::winit_030::WinitWindowAccessor;
+    fn attempt(splash: slint::Weak<crate::SplashWindow>, tries: u32) {
+        slint::Timer::single_shot(Duration::from_millis(5), move || {
+            let Some(sp) = splash.upgrade() else { return };
+            let window = sp.window();
+            match window.with_winit_window(|w| w.current_monitor()) {
+                Some(Some(monitor)) => {
+                    let (pos, area, size) = (monitor.position(), monitor.size(), window.size());
+                    window.set_position(slint::PhysicalPosition::new(
+                        pos.x + (area.width as i32 - size.width as i32) / 2,
+                        pos.y + (area.height as i32 - size.height as i32) / 2,
+                    ));
+                }
+                Some(None) => {}
+                None if tries > 0 => attempt(splash, tries - 1),
+                None => {}
+            }
+        });
+    }
+    attempt(splash.as_weak(), 100);
+}
 
 pub fn run(db: Db, files: Vec<PathBuf>) -> anyhow::Result<()> {
+    // Wayland app id and X11 window class, which tie the windows to trax.desktop (icon,
+    // taskbar grouping). Has to be set before the first window is created.
+    #[cfg(target_os = "linux")]
+    let _ = slint::set_xdg_app_id("trax");
     // Up before anything else, so there is something to look at while the library opens.
     let splash = match db.setting_bool("splash", true) {
         true => crate::SplashWindow::new().map_err(|e| log::error!("launch animation failed: {e}")).ok(),
@@ -257,7 +286,7 @@ pub fn run(db: Db, files: Vec<PathBuf>) -> anyhow::Result<()> {
     if let Some(sp) = &splash {
         sp.set_version(s(concat!("v", env!("CARGO_PKG_VERSION"))));
         let _ = sp.show();
-        center_splash(sp.window());
+        center_splash(sp);
     }
     let window = AppWindow::new()?;
     let popup = TrayPopup::new()?;
@@ -474,7 +503,7 @@ impl App {
         b.set_nc_password(s(db.setting_or("nc_password", "")));
         b.set_nc_folder(s(db.setting_or("nc_folder", "Music")));
         b.set_ytdlp_path(s(db.setting_or("ytdlp_path", "")));
-        b.set_ytdlp_folder(s(paths::bin_dir().display().to_string()));
+        b.set_ytdlp_help(s(youtube::setup_help(&paths::bin_dir().display().to_string())));
         b.set_sp_client_id(s(db.setting_or("sp_client_id", "")));
         b.set_sp_client_secret(s(db.setting_or("sp_client_secret", "")));
         let folders: Vec<SharedString> =
@@ -590,7 +619,7 @@ impl App {
         std::thread::spawn(move || {
             let status = match youtube::version(&path) {
                 Some(v) => format!("yt-dlp {v} ✓"),
-                None => "yt-dlp not found — see the steps above".to_string(),
+                None => youtube::not_found_hint(&path).to_string(),
             };
             post(move |a| a.backend().set_ytdlp_status(s(status)));
         });
@@ -2093,7 +2122,22 @@ fn set_native_window_icon(window: &slint::Window, scale: f64) {
             }
         });
     }
-    #[cfg(not(windows))]
+    // X11 takes the icon from the window; Wayland from the desktop entry (see `system`).
+    #[cfg(target_os = "linux")]
+    {
+        use slint::winit_030::WinitWindowAccessor;
+        use slint::winit_030::winit::window::Icon;
+        let _ = scale;
+        let Ok(img) = image::load_from_memory(include_bytes!("../assets/logo/AppIcon.iconset/icon_32x32@2x.png")) else {
+            return;
+        };
+        let img = img.into_rgba8();
+        let (w, h) = img.dimensions();
+        if let Ok(icon) = Icon::from_rgba(img.into_raw(), w, h) {
+            window.with_winit_window(|win| win.set_window_icon(Some(icon)));
+        }
+    }
+    #[cfg(not(any(windows, target_os = "linux")))]
     let _ = (window, scale);
 }
 

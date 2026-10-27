@@ -1,17 +1,38 @@
 # Builds a release when a version tag is pushed, e.g.:
 #   (bump `version` in Cargo.toml to 0.2.0, commit)  git tag v0.2.0 && git push origin v0.2.0
-# Publishes the installer, the portable zip and SHA256SUMS.txt, which trax's updater needs.
+# Publishes the Windows installer, the portable zip, the Debian / Ubuntu package, the Linux
+# tarball and SHA256SUMS.txt, which trax's updater needs.
+# "Run workflow" (Actions tab) builds and tests everything without publishing; the packages
+# are then downloadable from the run's artifacts.
 name: Release
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check tag matches Cargo.toml
+        id: version
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
+          if [ "$GITHUB_REF_TYPE" = tag ] && [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+            echo "Tag $GITHUB_REF_NAME doesn't match Cargo.toml version $version"; exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
   windows:
+    needs: version
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -19,15 +40,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
-
-      - name: Check tag matches Cargo.toml
-        id: version
-        shell: pwsh
-        run: |
-          $version = (Select-String -Path Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
-          $tag = "${{ github.ref_name }}".TrimStart('v')
-          if ($tag -ne $version) { throw "Tag v$tag doesn't match Cargo.toml version $version" }
-          "version=$version" >> $env:GITHUB_OUTPUT
 
       - name: Test
         run: cargo test --release
@@ -49,23 +61,112 @@ jobs:
             if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress }
             $env:PATH += ";${env:ProgramFiles(x86)}\Inno Setup 6"
           }
-          iscc /DAppVersion=${{ steps.version.outputs.version }} installer\trax.iss
+          iscc /DAppVersion=${{ needs.version.outputs.version }} installer\trax.iss
 
-      - name: Portable zip and checksums
+      - name: Installer and portable zip
         shell: pwsh
         run: |
-          $v = "${{ steps.version.outputs.version }}"
+          $v = "${{ needs.version.outputs.version }}"
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item "target\installer\trax-setup-$v.exe" dist\
           Compress-Archive -Path target\release\trax.exe, README.md, LICENSE, THIRD_PARTY_LICENSES.txt -DestinationPath "dist\trax-$v-portable.zip"
-          Get-ChildItem dist | ForEach-Object {
-            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
-          } | Set-Content -Encoding ascii dist\SHA256SUMS.txt
-          Get-Content dist\SHA256SUMS.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: dist/*
+
+  linux:
+    needs: version
+    # The oldest supported runner, so the binary runs on distributions with glibc 2.35 or newer.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: System libraries
+        # ALSA and fontconfig are linked; X11, Wayland, OpenGL and xkbcommon are loaded at runtime.
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends pkg-config libasound2-dev libfontconfig1-dev
+
+      - name: Test
+        run: cargo test --release
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Third-party licenses
+        run: |
+          cargo install cargo-about --locked --features cli
+          cargo about generate --output-file THIRD_PARTY_LICENSES.txt about.hbs
+
+      - name: Debian package
+        # Packaging rules are in Cargo.toml under [package.metadata.deb].
+        run: |
+          cargo install cargo-deb --locked
+          cargo deb --no-build
+          mkdir -p dist
+          cp target/debian/*.deb dist/
+
+      - name: Tarball
+        run: |
+          v="${{ needs.version.outputs.version }}"
+          pkg="trax-$v-linux-x86_64"
+          mkdir -p "dist" "$pkg"
+          cp target/release/trax README.md LICENSE THIRD_PARTY_LICENSES.txt "$pkg/"
+          strip "$pkg/trax"
+          tar -czf "dist/$pkg.tar.gz" "$pkg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: dist/*
+
+  # The package has to install with apt (all dependencies found) on the oldest and newest
+  # supported Debian and Ubuntu.
+  deb-install:
+    needs: linux
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image: ["debian:12", "ubuntu:22.04", "ubuntu:24.04"]
+    container: ${{ matrix.image }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux
+
+      - name: Install
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y ./trax_*_amd64.deb
+          test -x /usr/bin/trax
+          test -f /usr/share/applications/trax.desktop
+          if ldd /usr/bin/trax | grep "not found"; then exit 1; fi
+
+  publish:
+    if: github.ref_type == 'tag'
+    needs: [version, windows, linux, deb-install]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Checksums
+        working-directory: dist
+        run: |
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
 
       - name: Publish release
-        shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ github.ref_name }}" dist\* --title "trax ${{ steps.version.outputs.version }}" --generate-notes
+          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" \
+            --title "trax ${{ needs.version.outputs.version }}" --generate-notes

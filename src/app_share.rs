@@ -110,7 +110,23 @@ pub(super) fn copy_text(text: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+pub(super) fn copy_text(text: &str) -> anyhow::Result<()> {
+    // On Linux the copying program serves the clipboard itself, so the handle stays open.
+    thread_local! {
+        static CLIPBOARD: std::cell::RefCell<Option<arboard::Clipboard>> = const { std::cell::RefCell::new(None) };
+    }
+    CLIPBOARD.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.is_none() {
+            *c = Some(arboard::Clipboard::new()?);
+        }
+        c.as_mut().unwrap().set_text(text)?;
+        Ok(())
+    })
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 pub(super) fn copy_text(_text: &str) -> anyhow::Result<()> {
     anyhow::bail!("select the code and copy it")
 }

@@ -113,11 +113,14 @@ mod imp {
             .collect()
     }
 
-    /// The Default apps page for trax, where the user confirms trax as the default.
-    pub fn open_default_apps() {
+    /// Register, then open the Default apps page for trax, where the user confirms trax as
+    /// the default. Returns what to tell the user.
+    pub fn make_default() -> Result<&'static str> {
+        register()?;
         let _ = crate::connectors::hidden_command("cmd")
             .args(["/C", "start", "", "ms-settings:defaultapps?registeredAppUser=trax"])
             .spawn();
+        Ok("In Default apps, choose trax for the file types you want")
     }
 
     fn notify_shell() {
@@ -127,7 +130,344 @@ mod imp {
     }
 }
 
-#[cfg(not(windows))]
+/// Linux: a desktop entry and icons in `~/.local/share`, defaults in `~/.config/mimeapps.list`
+/// (the freedesktop.org specs every desktop follows). Unlike Windows, apps may set
+/// themselves as the default, so no confirmation step is needed.
+#[cfg(target_os = "linux")]
+mod imp {
+    use super::FILE_TYPES;
+    use anyhow::{Context, Result};
+    use std::path::PathBuf;
+
+    const DESKTOP_ID: &str = "trax.desktop";
+
+    /// MIME types per file type; the first is the one file managers report.
+    const MIME_TYPES: &[(&str, &[&str])] = &[
+        (".mp3", &["audio/mpeg", "audio/mp3", "audio/x-mp3", "audio/x-mpeg"]),
+        (".flac", &["audio/flac", "audio/x-flac"]),
+        (".m4a", &["audio/mp4", "audio/x-m4a"]),
+        (".aac", &["audio/aac", "audio/x-aac"]),
+        (".ogg", &["audio/x-vorbis+ogg", "audio/ogg", "audio/vorbis"]),
+        (".oga", &["audio/ogg"]),
+        (".wav", &["audio/x-wav", "audio/wav", "audio/vnd.wave"]),
+    ];
+
+    const ICONS: &[(u32, &[u8])] = &[
+        (16, include_bytes!("../assets/logo/AppIcon.iconset/icon_16x16.png")),
+        (32, include_bytes!("../assets/logo/AppIcon.iconset/icon_32x32.png")),
+        (64, include_bytes!("../assets/logo/AppIcon.iconset/icon_32x32@2x.png")),
+        (128, include_bytes!("../assets/logo/AppIcon.iconset/icon_128x128.png")),
+        (256, include_bytes!("../assets/logo/AppIcon.iconset/icon_256x256.png")),
+        (512, include_bytes!("../assets/logo/AppIcon.iconset/icon_512x512.png")),
+    ];
+
+    fn mime_types() -> impl Iterator<Item = &'static str> + Clone {
+        MIME_TYPES.iter().flat_map(|(_, m)| m.iter().copied())
+    }
+
+    fn data_home() -> Result<PathBuf> {
+        Ok(directories::BaseDirs::new().context("no home folder")?.data_dir().to_path_buf())
+    }
+
+    fn desktop_file() -> Result<PathBuf> {
+        Ok(data_home()?.join("applications").join(DESKTOP_ID))
+    }
+
+    fn icon_file(size: u32) -> Result<PathBuf> {
+        Ok(data_home()?.join(format!("icons/hicolor/{size}x{size}/apps/trax.png")))
+    }
+
+    /// Installed from the .deb, which brings its own desktop entry and icons in `/usr/share`.
+    fn packaged() -> bool {
+        crate::updater::install_kind() == crate::updater::InstallKind::Installed
+            && std::path::Path::new("/usr/share/applications").join(DESKTOP_ID).exists()
+    }
+
+    /// `Exec=` line starting this trax. The path is quoted for the Exec rules, then escaped
+    /// once more as a desktop entry string.
+    fn exec_line() -> Result<String> {
+        let exe = std::env::current_exe().context("can't find trax")?;
+        let mut quoted = String::new();
+        for c in exe.to_string_lossy().chars() {
+            match c {
+                '"' | '`' | '$' | '\\' => quoted.extend(['\\', c]),
+                '%' => quoted.push_str("%%"),
+                _ => quoted.push(c),
+            }
+        }
+        Ok(format!("Exec=\"{}\" %F", quoted.replace('\\', "\\\\")))
+    }
+
+    /// The desktop entry; the .deb ships the same one with `Exec=trax %F`
+    /// (`assets/linux/trax.desktop`, kept in step by a test).
+    fn desktop_entry(exec_line: &str) -> String {
+        let mut mimes = String::new();
+        for m in mime_types() {
+            if !mimes.split(';').any(|known| known == m) {
+                mimes.push_str(&format!("{m};"));
+            }
+        }
+        format!(
+            "[Desktop Entry]\n\
+             Type=Application\n\
+             Name=trax\n\
+             GenericName=Music Player\n\
+             Comment=Music player for local, Nextcloud, YouTube and SoundCloud music\n\
+             {exec_line}\n\
+             Icon=trax\n\
+             Terminal=false\n\
+             StartupWMClass=trax\n\
+             Categories=AudioVideo;Audio;Player;\n\
+             Keywords=music;player;audio;playlist;\n\
+             MimeType={mimes}\n"
+        )
+    }
+
+    /// Let the desktop pick up new or removed entries ("Open with" reads this cache).
+    fn refresh_desktop_database() {
+        if let Ok(dir) = data_home() {
+            let _ = std::process::Command::new("update-desktop-database").arg(dir.join("applications")).output();
+        }
+    }
+
+    /// Register trax for its file types (current user): launcher entry, icon, "Open with".
+    /// The package already has the entry and icons, so then only the associations are added.
+    pub fn register() -> Result<()> {
+        if !packaged() {
+            let file = desktop_file()?;
+            std::fs::create_dir_all(file.parent().unwrap())?;
+            std::fs::write(&file, desktop_entry(&exec_line()?)).context("can't write the desktop entry")?;
+            for (size, png) in ICONS {
+                let path = icon_file(*size)?;
+                std::fs::create_dir_all(path.parent().unwrap())?;
+                std::fs::write(path, png)?;
+            }
+        }
+        mimeapps::edit(|section, mime, apps| {
+            if section == mimeapps::ADDED && mime_types().any(|m| m == mime) && !apps.iter().any(|a| a == DESKTOP_ID) {
+                apps.insert(0, DESKTOP_ID.into());
+            }
+        }, mime_types())?;
+        refresh_desktop_database();
+        Ok(())
+    }
+
+    /// Remove everything `register` and `make_default` added.
+    pub fn unregister() -> Result<()> {
+        mimeapps::edit(|_, _, apps| apps.retain(|a| a != DESKTOP_ID), std::iter::empty())?;
+        let _ = std::fs::remove_file(desktop_file()?);
+        for (size, _) in ICONS {
+            let _ = std::fs::remove_file(icon_file(*size)?);
+        }
+        refresh_desktop_database();
+        Ok(())
+    }
+
+    /// Registered, and pointing at this trax (a moved copy needs registering again).
+    pub fn registered_here() -> Option<bool> {
+        if packaged() {
+            return Some(true);
+        }
+        let entry = std::fs::read_to_string(desktop_file().ok()?).ok()?;
+        let exec = exec_line().ok()?;
+        Some(entry.lines().any(|l| l == exec))
+    }
+
+    /// File types for which trax is the default app.
+    pub fn default_for() -> Vec<&'static str> {
+        FILE_TYPES
+            .iter()
+            .copied()
+            .filter(|ext| {
+                MIME_TYPES
+                    .iter()
+                    .find(|(e, _)| e == ext)
+                    .and_then(|(_, m)| mimeapps::default_app(m[0]))
+                    .is_some_and(|app| app == DESKTOP_ID)
+            })
+            .collect()
+    }
+
+    /// Register and make trax the default for all its file types. Returns what to tell the user.
+    pub fn make_default() -> Result<&'static str> {
+        register()?;
+        mimeapps::edit(|section, mime, apps| {
+            if section == mimeapps::DEFAULT && mime_types().any(|m| m == mime) {
+                *apps = vec![DESKTOP_ID.into()];
+            }
+        }, mime_types())?;
+        refresh_desktop_database();
+        Ok("trax is now the default music player")
+    }
+
+    /// Reading and writing `mimeapps.list`. Desktop-specific files such as
+    /// `kde-mimeapps.list` take precedence, so they are read first and edited too if present.
+    mod mimeapps {
+        use anyhow::{Context, Result};
+        use std::path::PathBuf;
+
+        pub const DEFAULT: &str = "Default Applications";
+        pub const ADDED: &str = "Added Associations";
+
+        /// Most important first.
+        fn files() -> Vec<PathBuf> {
+            let Some(config) = directories::BaseDirs::new().map(|d| d.config_dir().to_path_buf()) else { return vec![] };
+            let desktops = std::env::var("XDG_CURRENT_DESKTOP").unwrap_or_default();
+            let mut files: Vec<PathBuf> = desktops
+                .split(':')
+                .filter(|d| !d.is_empty())
+                .map(|d| config.join(format!("{}-mimeapps.list", d.to_lowercase())))
+                .collect();
+            files.push(config.join("mimeapps.list"));
+            files
+        }
+
+        /// The app the user chose for `mime`, if any.
+        pub fn default_app(mime: &str) -> Option<String> {
+            files().into_iter().find_map(|f| {
+                let text = std::fs::read_to_string(f).ok()?;
+                let mut section = "";
+                text.lines().find_map(|l| {
+                    let l = l.trim();
+                    if let Some(name) = l.strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+                        section = name;
+                        return None;
+                    }
+                    let (key, value) = l.split_once('=')?;
+                    (section == DEFAULT && key.trim() == mime)
+                        .then(|| value.split(';').map(str::trim).find(|a| !a.is_empty()).map(String::from))
+                        .flatten()
+                })
+            })
+        }
+
+        /// Apply `f(section, mime, apps)` to every association in both sections, in every
+        /// existing file. `ensure` lists types that get an (empty) entry in the main file
+        /// first, so `f` can fill them in. Entries left without apps are dropped.
+        pub fn edit<'a>(f: impl Fn(&str, &str, &mut Vec<String>), ensure: impl Iterator<Item = &'a str> + Clone) -> Result<()> {
+            let all = files();
+            let main = all.last().cloned().context("no config folder")?;
+            for file in all {
+                let is_main = file == main;
+                let text = match std::fs::read_to_string(&file) {
+                    Ok(t) => t,
+                    Err(_) if is_main => String::new(),
+                    Err(_) => continue,
+                };
+                let edited = edit_text(&text, &f, if is_main { Some(ensure.clone()) } else { None });
+                if edited != text {
+                    if let Some(dir) = file.parent() {
+                        std::fs::create_dir_all(dir)?;
+                    }
+                    std::fs::write(&file, edited).with_context(|| format!("can't write {}", file.display()))?;
+                }
+            }
+            Ok(())
+        }
+
+        pub(super) fn edit_text<'a>(
+            text: &str,
+            f: &impl Fn(&str, &str, &mut Vec<String>),
+            ensure: Option<impl Iterator<Item = &'a str> + Clone>,
+        ) -> String {
+            // Sections in order, each with its lines; the part before any header has no name.
+            let mut sections: Vec<(String, Vec<String>)> = vec![(String::new(), vec![])];
+            for l in text.lines() {
+                match l.trim().strip_prefix('[').and_then(|l| l.strip_suffix(']')) {
+                    Some(name) => sections.push((name.to_string(), vec![])),
+                    None => sections.last_mut().unwrap().1.push(l.to_string()),
+                }
+            }
+            if let Some(ensure) = ensure {
+                for name in [DEFAULT, ADDED] {
+                    if !sections.iter().any(|(n, _)| n == name) {
+                        sections.push((name.to_string(), vec![]));
+                    }
+                    let lines = &mut sections.iter_mut().find(|(n, _)| n == name).unwrap().1;
+                    for mime in ensure.clone() {
+                        if !lines.iter().any(|l| l.split_once('=').is_some_and(|(k, _)| k.trim() == mime)) {
+                            lines.push(format!("{mime}="));
+                        }
+                    }
+                }
+            }
+            for (name, lines) in &mut sections {
+                if name != DEFAULT && name != ADDED {
+                    continue;
+                }
+                lines.retain_mut(|l| {
+                    let Some((key, value)) = l.split_once('=') else { return true };
+                    let key = key.trim().to_string();
+                    let mut apps: Vec<String> =
+                        value.split(';').map(str::trim).filter(|a| !a.is_empty()).map(String::from).collect();
+                    let before = apps.clone();
+                    f(name, &key, &mut apps);
+                    if apps == before && !apps.is_empty() {
+                        return true; // untouched lines keep their exact spelling
+                    }
+                    *l = format!("{key}={}", apps.iter().map(|a| format!("{a};")).collect::<String>());
+                    !apps.is_empty()
+                });
+            }
+            let mut out = String::new();
+            for (i, (name, lines)) in sections.iter().enumerate() {
+                if i > 0 {
+                    if !out.is_empty() && !out.ends_with("\n\n") {
+                        out.push('\n');
+                    }
+                    out.push_str(&format!("[{name}]\n"));
+                }
+                for l in lines {
+                    out.push_str(l);
+                    out.push('\n');
+                }
+            }
+            out
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::mimeapps::{ADDED, DEFAULT, edit_text};
+
+        #[test]
+        fn packaged_desktop_entry_is_current() {
+            let packaged = include_str!("../assets/linux/trax.desktop").replace("\r\n", "\n");
+            assert_eq!(packaged, super::desktop_entry("Exec=trax %F"));
+        }
+
+        #[test]
+        fn mimeapps_set_and_remove() {
+            let text = "[Default Applications]\naudio/mpeg=vlc.desktop;\ntext/plain=gedit.desktop;\n";
+            let set = edit_text(
+                text,
+                &|section: &str, mime: &str, apps: &mut Vec<String>| {
+                    if mime.starts_with("audio/") {
+                        if section == DEFAULT {
+                            *apps = vec!["trax.desktop".into()];
+                        } else if section == ADDED {
+                            apps.insert(0, "trax.desktop".into());
+                        }
+                    }
+                },
+                Some(["audio/mpeg", "audio/flac"].into_iter()),
+            );
+            assert_eq!(
+                set,
+                "[Default Applications]\naudio/mpeg=trax.desktop;\ntext/plain=gedit.desktop;\naudio/flac=trax.desktop;\n\n\
+                 [Added Associations]\naudio/mpeg=trax.desktop;\naudio/flac=trax.desktop;\n"
+            );
+            let removed = edit_text(
+                &set,
+                &|_: &str, _: &str, apps: &mut Vec<String>| apps.retain(|a| a != "trax.desktop"),
+                None::<std::iter::Empty<&str>>,
+            );
+            assert_eq!(removed, "[Default Applications]\ntext/plain=gedit.desktop;\n\n[Added Associations]\n");
+        }
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 mod imp {
     use anyhow::{Result, bail};
     pub fn register() -> Result<()> {
@@ -142,7 +482,9 @@ mod imp {
     pub fn default_for() -> Vec<&'static str> {
         vec![]
     }
-    pub fn open_default_apps() {}
+    pub fn make_default() -> Result<&'static str> {
+        bail!("not supported on this system yet")
+    }
 }
 
 pub use imp::*;

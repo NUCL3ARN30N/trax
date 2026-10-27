@@ -906,7 +906,7 @@ export component SettingsPage inherits Rectangle {
                 }
 
                 if Backend.yt-enabled || Backend.sc-enabled: Text {
-                    text: "trax doesn't include or download yt-dlp. To use these sources, get yt-dlp yourself from the yt-dlp project's GitHub releases (yt-dlp.exe) and either:\n  1. put yt-dlp.exe in trax's yt-dlp folder: " + Backend.ytdlp-folder + " (\"Open yt-dlp folder\" below), or\n  2. put it anywhere and enter its full path below, or\n  3. install it so it is on your PATH (e.g. winget install yt-dlp).\nThen click Save to check it. Keep it up to date yourself (yt-dlp -U).";
+                    text: Backend.ytdlp-help;
                     wrap: word-wrap;
                     color: Theme.on-surface-variant;
                 }

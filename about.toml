@@ -1,7 +1,7 @@
-# cargo-about: licenses of everything compiled into trax.exe.
+# cargo-about: licenses of everything compiled into trax (Windows and Linux).
 # Regenerate THIRD_PARTY_LICENSES.txt with:
 #   cargo about generate --output-file THIRD_PARTY_LICENSES.txt about.hbs
-targets = ["x86_64-pc-windows-msvc"]
+targets = ["x86_64-pc-windows-msvc", "x86_64-unknown-linux-gnu"]
 ignore-build-dependencies = true
 ignore-dev-dependencies = true
 # Order matters where a crate offers a choice: Slint is used under GPL-3.0, like trax itself.

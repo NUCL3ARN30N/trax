@@ -1,8 +1,11 @@
 //! Updates from GitHub releases.
 //!
 //! Each release carries `trax-setup-<version>.exe` (installer), `trax-<version>-portable.zip`
-//! (just `trax.exe`) and `SHA256SUMS.txt`. Downloads are only used when their checksum matches.
-//! An installed copy runs the new installer; a portable copy swaps its own exe.
+//! (just `trax.exe`), `trax_<version>-1_amd64.deb` (Debian / Ubuntu package),
+//! `trax-<version>-linux-x86_64.tar.gz` (the Linux `trax` binary) and `SHA256SUMS.txt`.
+//! Downloads are only used when their checksum matches.
+//! An installed copy runs the new installer (or installs the new package); a portable copy or
+//! an unpacked Linux tarball swaps its own exe.
 
 use crate::connectors::http_client;
 use crate::paths;
@@ -48,17 +51,45 @@ impl InstallKind {
     }
 }
 
+#[cfg(windows)]
+const EXE_NAME: &str = "trax.exe";
+#[cfg(not(windows))]
+const EXE_NAME: &str = "trax";
+
 fn current_exe() -> Result<PathBuf> {
-    std::env::current_exe().context("can't find trax.exe")
+    std::env::current_exe().with_context(|| format!("can't find {EXE_NAME}"))
+}
+
+/// `trax.exe` → `trax.exe.old` (or `trax` → `trax.old`).
+fn beside(exe: &Path, suffix: &str) -> PathBuf {
+    let mut name = exe.file_name().unwrap_or_default().to_os_string();
+    name.push(format!(".{suffix}"));
+    exe.with_file_name(name)
 }
 
 /// The installer puts its uninstaller next to trax.exe; a portable copy has none.
+#[cfg(not(target_os = "linux"))]
 pub fn install_kind() -> InstallKind {
     let installed = current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.join("unins000.exe").exists()))
         .unwrap_or(false);
     if installed { InstallKind::Installed } else { InstallKind::Portable }
+}
+
+/// The .deb puts trax in `/usr/bin`; an unpacked tarball lives wherever the user put it.
+#[cfg(target_os = "linux")]
+pub fn install_kind() -> InstallKind {
+    match current_exe() {
+        Ok(p) if p.starts_with("/usr") => InstallKind::Installed,
+        _ => InstallKind::Portable,
+    }
+}
+
+/// Whether `program` is on PATH.
+#[cfg(target_os = "linux")]
+fn on_path(program: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|path| std::env::split_paths(&path).any(|d| d.join(program).is_file()))
 }
 
 /// `TRAX_UPDATE_URL` points the check at another server (testing).
@@ -142,8 +173,14 @@ impl Release {
     /// The download that fits this copy of trax.
     pub fn package(&self, kind: InstallKind) -> Option<&Asset> {
         match kind {
+            #[cfg(not(target_os = "linux"))]
             InstallKind::Installed => self.asset(|n| n.starts_with("trax-setup") && n.ends_with(".exe")),
+            #[cfg(target_os = "linux")]
+            InstallKind::Installed => self.asset(|n| n.starts_with("trax_") && n.ends_with("_amd64.deb")),
+            #[cfg(not(target_os = "linux"))]
             InstallKind::Portable => self.asset(|n| n.contains("portable") && n.ends_with(".zip")),
+            #[cfg(target_os = "linux")]
+            InstallKind::Portable => self.asset(|n| n.contains("linux") && n.ends_with(".tar.gz")),
         }
     }
 
@@ -219,23 +256,35 @@ pub fn stage(package: &Path, kind: InstallKind) -> Result<()> {
 fn stage_at(exe: &Path, package: &Path, kind: InstallKind) -> Result<Command> {
     let exe = exe.to_path_buf();
     let cmd = match kind {
+        #[cfg(not(target_os = "linux"))]
         InstallKind::Installed => {
             let mut c = Command::new(package);
             // /update=1 makes the installer start trax again when it is done.
             c.args(["/SILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/CLOSEAPPLICATIONS", "/update=1"]);
             c
         }
+        // The package is installed with administrator rights: pkexec asks for the password in
+        // a desktop dialog, then trax starts again.
+        #[cfg(target_os = "linux")]
+        InstallKind::Installed => {
+            if !on_path("pkexec") {
+                bail!("installing updates needs pkexec; install the new .deb from the release page yourself");
+            }
+            let mut c = Command::new("sh");
+            c.args(["-c", r#"pkexec apt-get install -y "$1" && exec "$2""#, "sh"]).arg(package).arg(&exe);
+            c
+        }
         InstallKind::Portable => {
-            let new_exe = exe.with_extension("exe.new");
+            let new_exe = beside(&exe, "new");
             extract_exe(package, &new_exe)?;
             // A running exe can be renamed, so the old one moves aside and is deleted on the
             // next start.
-            let old = exe.with_extension("exe.old");
+            let old = beside(&exe, "old");
             let _ = std::fs::remove_file(&old);
-            std::fs::rename(&exe, &old).context("can't replace trax.exe (is the folder read-only?)")?;
+            std::fs::rename(&exe, &old).with_context(|| format!("can't replace {EXE_NAME} (is the folder read-only?)"))?;
             if let Err(e) = std::fs::rename(&new_exe, &exe) {
                 let _ = std::fs::rename(&old, &exe);
-                return Err(e).context("can't put the new trax.exe in place");
+                return Err(e).with_context(|| format!("can't put the new {EXE_NAME} in place"));
             }
             Command::new(&exe)
         }
@@ -243,6 +292,7 @@ fn stage_at(exe: &Path, package: &Path, kind: InstallKind) -> Result<Command> {
     Ok(cmd)
 }
 
+#[cfg(not(target_os = "linux"))]
 fn extract_exe(zip_path: &Path, dest: &Path) -> Result<()> {
     let mut archive = zip::ZipArchive::new(std::fs::File::open(zip_path)?)?;
     let index = (0..archive.len())
@@ -261,6 +311,25 @@ fn extract_exe(zip_path: &Path, dest: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The `trax` binary from the Linux `.tar.gz`, made executable.
+#[cfg(target_os = "linux")]
+fn extract_exe(tar_path: &Path, dest: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mut archive = tar::Archive::new(flate2::read::GzDecoder::new(std::fs::File::open(tar_path)?));
+    for entry in archive.entries()? {
+        let mut entry = entry?;
+        let path = entry.path()?.into_owned();
+        if entry.header().entry_type().is_file() && path.file_name().is_some_and(|n| n == EXE_NAME) {
+            let mut out = std::fs::File::create(dest)?;
+            std::io::copy(&mut entry, &mut out)?;
+            out.flush()?;
+            std::fs::set_permissions(dest, std::fs::Permissions::from_mode(0o755))?;
+            return Ok(());
+        }
+    }
+    bail!("{EXE_NAME} not found in the download")
+}
+
 /// Called after the event loop ended and everything is saved.
 pub fn run_after_exit() {
     if let Some(mut cmd) = AFTER_EXIT.lock().unwrap().take() {
@@ -274,7 +343,7 @@ pub fn run_after_exit() {
 /// the previous process has exited, so this waits for that briefly.
 pub fn cleanup() {
     if let Ok(exe) = current_exe() {
-        let old = exe.with_extension("exe.old");
+        let old = beside(&exe, "old");
         for _ in 0..50 {
             if !old.exists() || std::fs::remove_file(&old).is_ok() {
                 break;
@@ -304,6 +373,7 @@ mod tests {
     /// Against a test release server: `TRAX_UPDATE_URL=http://…/release.json cargo test -- --ignored`.
     #[test]
     #[ignore]
+    #[cfg(windows)]
     fn download_from_test_server() {
         crate::paths::use_test_dir();
         let release = check().unwrap().expect("test server should offer a newer version");
@@ -334,16 +404,61 @@ mod tests {
             r#"{"tag_name":"v0.2.0","body":"Notes","html_url":"https://github.com/x/y","draft":false,"prerelease":false,
             "assets":[{"name":"trax-setup-0.2.0.exe","browser_download_url":"https://e/setup","size":10},
                       {"name":"trax-0.2.0-portable.zip","browser_download_url":"https://e/zip","size":5},
+                      {"name":"trax-0.2.0-linux-x86_64.tar.gz","browser_download_url":"https://e/tar","size":5},
+                      {"name":"trax_0.2.0-1_amd64.deb","browser_download_url":"https://e/deb","size":5},
                       {"name":"SHA256SUMS.txt","browser_download_url":"https://e/sums","size":1}]}"#,
         )
         .unwrap();
         let r = parse_release(&json).unwrap();
         assert_eq!(r.version, "0.2.0");
+        #[cfg(not(target_os = "linux"))]
         assert_eq!(r.package(InstallKind::Installed).unwrap().url, "https://e/setup");
+        #[cfg(target_os = "linux")]
+        assert_eq!(r.package(InstallKind::Installed).unwrap().url, "https://e/deb");
+        #[cfg(not(target_os = "linux"))]
         assert_eq!(r.package(InstallKind::Portable).unwrap().url, "https://e/zip");
+        #[cfg(target_os = "linux")]
+        assert_eq!(r.package(InstallKind::Portable).unwrap().url, "https://e/tar");
         let sums = "ABCDEF  trax-setup-0.2.0.exe\n123456 *trax-0.2.0-portable.zip\n";
         assert_eq!(expected_sum(sums, "trax-setup-0.2.0.exe").as_deref(), Some("abcdef"));
         assert_eq!(expected_sum(sums, "trax-0.2.0-portable.zip").as_deref(), Some("123456"));
         assert!(expected_sum(sums, "other.zip").is_none());
+    }
+
+    #[test]
+    fn old_and_new_exe_names() {
+        assert_eq!(beside(Path::new("/a/trax.exe"), "old"), Path::new("/a/trax.exe.old"));
+        assert_eq!(beside(Path::new("/a/trax"), "new"), Path::new("/a/trax.new"));
+    }
+
+    /// The Linux package swap: the binary comes out of the tarball, executable, and takes the
+    /// old one's place.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn linux_tarball_swap() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = crate::paths::use_test_dir().join("tar-swap");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let pkg = dir.join("trax-9.9.9-linux-x86_64.tar.gz");
+        {
+            let gz = flate2::write::GzEncoder::new(std::fs::File::create(&pkg).unwrap(), flate2::Compression::fast());
+            let mut tar = tar::Builder::new(gz);
+            for (name, data) in [("trax-9.9.9/README.md", &b"readme"[..]), ("trax-9.9.9/trax", &b"new"[..])] {
+                let mut h = tar::Header::new_gnu();
+                h.set_size(data.len() as u64);
+                h.set_mode(0o644);
+                h.set_cksum();
+                tar.append_data(&mut h, name, data).unwrap();
+            }
+            tar.into_inner().unwrap().finish().unwrap();
+        }
+        let exe = dir.join("trax");
+        std::fs::write(&exe, b"old").unwrap();
+        let cmd = stage_at(&exe, &pkg, InstallKind::Portable).unwrap();
+        assert_eq!(std::fs::read(&exe).unwrap(), b"new");
+        assert_eq!(std::fs::metadata(&exe).unwrap().permissions().mode() & 0o777, 0o755);
+        assert_eq!(std::fs::read(dir.join("trax.old")).unwrap(), b"old");
+        assert_eq!(Path::new(cmd.get_program()), exe);
     }
 }

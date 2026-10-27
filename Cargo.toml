@@ -44,14 +44,42 @@ serde_json = "1.0.154"
 sha1 = "0.11.0"
 sha2 = "0.11.1"
 slint = { version = "1.18.1", features = ["raw-window-handle-06", "unstable-winit-030"] }
-souvlaki = "0.8.3"
+# MPRIS on Linux over zbus, so no libdbus is needed.
+souvlaki = { version = "0.8.3", default-features = false, features = ["use_zbus"] }
 tokio = { version = "1.53.3", features = ["rt-multi-thread", "macros", "sync", "time", "net"] }
 tokio-tungstenite = { version = "0.30.0", features = ["rustls-tls-webpki-roots"] }
-tray-icon = "0.26.1"
+# KSNI: the Linux tray talks D-Bus itself, without GTK or libappindicator.
+tray-icon = { version = "0.26.1", default-features = false, features = ["ksni"] }
 uuid = { version = "1.28.0", features = ["v4"] }
 walkdir = "2.5.0"
 webrtc = "0.21.1"
 zip = "9.0.5"
+
+# Debian / Ubuntu package, built with `cargo deb` (see the release workflow).
+[package.metadata.deb]
+name = "trax"
+maintainer = "NUCL3ARN30N <NUCL3ARN30N@users.noreply.github.com>"
+section = "sound"
+priority = "optional"
+extended-description = """Material Design music player for local files, Nextcloud, YouTube and SoundCloud, with playlists, an equalizer, lyrics, listening parties and friends."""
+# $auto finds the linked libraries (ALSA, fontconfig); the windowing, OpenGL and keyboard
+# libraries are loaded at runtime, so they are listed by hand.
+depends = "$auto, libegl1, libxkbcommon0, libxkbcommon-x11-0, libwayland-client0, libwayland-egl1, libx11-6, libx11-xcb1, libxcursor1, libxi6, libxrandr2"
+recommends = "pkexec"
+suggests = "yt-dlp"
+assets = [
+    ["target/release/trax", "usr/bin/", "755"],
+    ["assets/linux/trax.desktop", "usr/share/applications/", "644"],
+    ["assets/logo/AppIcon.iconset/icon_16x16.png", "usr/share/icons/hicolor/16x16/apps/trax.png", "644"],
+    ["assets/logo/AppIcon.iconset/icon_32x32.png", "usr/share/icons/hicolor/32x32/apps/trax.png", "644"],
+    ["assets/logo/AppIcon.iconset/icon_32x32@2x.png", "usr/share/icons/hicolor/64x64/apps/trax.png", "644"],
+    ["assets/logo/AppIcon.iconset/icon_128x128.png", "usr/share/icons/hicolor/128x128/apps/trax.png", "644"],
+    ["assets/logo/AppIcon.iconset/icon_256x256.png", "usr/share/icons/hicolor/256x256/apps/trax.png", "644"],
+    ["assets/logo/AppIcon.iconset/icon_512x512.png", "usr/share/icons/hicolor/512x512/apps/trax.png", "644"],
+    ["assets/linux/copyright", "usr/share/doc/trax/copyright", "644"],
+    ["README.md", "usr/share/doc/trax/README.md", "644"],
+    ["THIRD_PARTY_LICENSES.txt", "usr/share/doc/trax/", "644"],
+]
 
 [build-dependencies]
 slint-build = "1.18.1"
@@ -62,3 +90,8 @@ winresource = "0.1.34"
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.61.2", features = ["Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Foundation", "Win32_UI_Shell"] }
 winreg = "0.56.0"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
+tar = "0.4"
+zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }

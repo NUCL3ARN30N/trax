@@ -33,11 +33,8 @@ impl App {
     }
 
     pub(super) fn make_default_player(&mut self) {
-        match system::register() {
-            Ok(()) => {
-                system::open_default_apps();
-                self.toast("In Default apps, choose trax for the file types you want");
-            }
+        match system::make_default() {
+            Ok(msg) => self.toast(msg),
             Err(e) => self.toast(format!("Couldn't register trax: {e:#}")),
         }
         self.refresh_default_status();

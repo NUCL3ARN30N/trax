@@ -341,7 +341,8 @@ export global Backend {
     callback scan-nextcloud();
     callback save-ytdlp();
     callback open-ytdlp-folder();
-    in property <string> ytdlp-folder;
+    // Setup steps for this system (Settings → Sources).
+    in property <string> ytdlp-help;
     callback save-spotify();
     callback fetch-artist-art();
     callback pick-artist-art();
