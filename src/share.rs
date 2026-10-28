@@ -56,7 +56,7 @@ pub fn decode(code: &str) -> Result<Shared> {
     // Pasted codes may be wrapped or quoted by chat apps.
     let code: String = code.chars().filter(|c| !c.is_whitespace() && *c != '"' && *c != '\'').collect();
     let Some(data) = code.strip_prefix(PREFIX) else {
-        bail!("This isn't a trax playlist code (it should start with “{PREFIX}”)");
+        bail!("This isn't a trax playlist code (it should start with “{PREFIX}”) or a YouTube, YouTube Music or Spotify playlist link");
     };
     let bytes = URL_SAFE_NO_PAD.decode(data).context("The code is incomplete or damaged")?;
     let mut text = String::new();

@@ -8,6 +8,7 @@ mod backup;
 mod connectors;
 mod db;
 mod eq;
+mod import;
 mod fx;
 mod instance;
 mod loudness;

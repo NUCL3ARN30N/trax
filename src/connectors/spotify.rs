@@ -1,5 +1,7 @@
 //! Spotify Web API (client-credentials flow, no user login): artist profiles and artwork.
 //! Create an app at https://developer.spotify.com/dashboard to get a client id/secret.
+//! Playlists and albums to import are read from the public embed player instead, which needs
+//! no login (the Web API only lists a playlist's songs to its owner).
 
 use super::http_client;
 use crate::paths;
@@ -189,4 +191,92 @@ pub fn save_artist_image(artist: &str, bytes: &[u8]) -> Result<String> {
     let img = if img.width() > 1600 { img.thumbnail(1600, 1600) } else { img };
     img.to_rgb8().save_with_format(&path, image::ImageFormat::Jpeg)?;
     Ok(path.to_string_lossy().into_owned())
+}
+
+/// A song of a Spotify playlist or album.
+pub struct ListTrack {
+    pub title: String,
+    pub artists: String,
+    pub duration_ms: i64,
+}
+
+pub struct List {
+    pub name: String,
+    pub owner: String,
+    pub cover_url: Option<String>,
+    pub tracks: Vec<ListTrack>,
+}
+
+/// A public playlist or album (`kind` "playlist" or "album", `id` already checked) from the
+/// embed player, which holds the first 100 songs.
+pub fn list(kind: &str, id: &str) -> Result<List> {
+    let resp = http_client().get(format!("https://open.spotify.com/embed/{kind}/{id}")).send().context("cannot reach Spotify")?;
+    match resp.status().as_u16() {
+        200 => parse_embed(&resp.text()?),
+        404 => bail!("Spotify doesn't know this {kind}; private playlists can't be imported"),
+        s => bail!("Spotify returned status {s}"),
+    }
+}
+
+fn parse_embed(html: &str) -> Result<List> {
+    const START: &str = r#"<script id="__NEXT_DATA__" type="application/json">"#;
+    let json = html
+        .split_once(START)
+        .and_then(|(_, rest)| rest.split_once("</script>"))
+        .map(|(json, _)| json)
+        .context("unexpected Spotify page")?;
+    let v: serde_json::Value = serde_json::from_str(json).context("unexpected Spotify page")?;
+    let e = &v["props"]["pageProps"]["state"]["data"]["entity"];
+    let tracks = e["trackList"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        // Playlists can hold podcast episodes too.
+        .filter(|t| t["entityType"].as_str().is_none_or(|k| k == "track"))
+        .filter_map(|t| {
+            Some(ListTrack {
+                title: t["title"].as_str()?.trim().to_string(),
+                artists: t["subtitle"].as_str().unwrap_or("").trim().to_string(),
+                duration_ms: t["duration"].as_i64().unwrap_or(0),
+            })
+        })
+        .collect();
+    Ok(List {
+        name: e["name"].as_str().or(e["title"].as_str()).unwrap_or("").trim().to_string(),
+        owner: e["subtitle"].as_str().unwrap_or("").trim().to_string(),
+        // Playlists have `coverArt`, albums only the images of `visualIdentity`.
+        cover_url: e["coverArt"]["sources"]
+            .as_array()
+            .and_then(|s| s.first())
+            .or_else(|| e["visualIdentity"]["image"].as_array()?.iter().max_by_key(|i| i["maxWidth"].as_u64().unwrap_or(0)))
+            .and_then(|i| i["url"].as_str())
+            .map(String::from),
+        tracks,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn embed_page() {
+        let html = r#"<html><script id="__NEXT_DATA__" type="application/json">{"props":{"pageProps":{"state":{"data":{"entity":{
+            "name":"Road trip","subtitle":"Alex","coverArt":{"sources":[{"url":"https://i.scdn.co/image/x"}]},
+            "trackList":[
+                {"title":"Housewife","subtitle":"Tate McRae","duration":208810,"entityType":"track"},
+                {"title":"Duet","subtitle":"A, B","duration":1000,"entityType":"track"},
+                {"title":"Episode 1","subtitle":"Podcast","duration":5,"entityType":"episode"}
+            ]}}}}}}</script></html>"#;
+        let list = super::parse_embed(html).unwrap();
+        assert_eq!(list.name, "Road trip");
+        assert_eq!(list.owner, "Alex");
+        assert_eq!(list.cover_url.as_deref(), Some("https://i.scdn.co/image/x"));
+        assert_eq!(list.tracks.len(), 2);
+        assert_eq!(list.tracks[0].title, "Housewife");
+        assert_eq!(list.tracks[0].duration_ms, 208_810);
+        assert_eq!(list.tracks[1].artists, "A, B");
+        let album = r#"<script id="__NEXT_DATA__" type="application/json">{"props":{"pageProps":{"state":{"data":{"entity":{
+            "name":"Album","visualIdentity":{"image":[{"url":"small","maxWidth":64},{"url":"large","maxWidth":640}]},"trackList":[]}}}}}}</script>"#;
+        assert_eq!(super::parse_embed(album).unwrap().cover_url.as_deref(), Some("large"));
+        assert!(super::parse_embed("<html></html>").is_err());
+    }
 }

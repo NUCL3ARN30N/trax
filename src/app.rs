@@ -28,6 +28,8 @@ mod files;
 mod system_settings;
 #[path = "app_share.rs"]
 mod share_ui;
+#[path = "app_import.rs"]
+mod import_ui;
 #[path = "app_party.rs"]
 mod party_app;
 #[path = "app_social.rs"]
@@ -160,6 +162,8 @@ pub struct App {
     prefetching: Arc<Mutex<HashSet<String>>>,
     /// A download run for the playlists kept offline is in progress.
     offline_busy: bool,
+    /// A playlist is being imported from a link.
+    import_busy: bool,
     favorites: crate::ui_models::Favorites,
     spectrum: Rc<VecModel<f32>>,
     spectrum_peaks: Rc<VecModel<f32>>,
@@ -363,6 +367,7 @@ pub fn run(db: Db, files: Vec<PathBuf>) -> anyhow::Result<()> {
         edit_cover: None,
         prefetching: Arc::new(Mutex::new(HashSet::new())),
         offline_busy: false,
+        import_busy: false,
         lyrics: Default::default(),
         lyrics_key: String::new(),
         lyrics_index: -1,

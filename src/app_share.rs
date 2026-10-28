@@ -1,8 +1,10 @@
-//! Sharing playlists as a code, and importing shared codes (see `crate::share`).
+//! Sharing playlists as a code, and importing shared codes (see `crate::share`) and
+//! playlist links (see `crate::import`).
 
 use super::{App, PlaylistView, post, s};
 use crate::connectors::{soundcloud, youtube};
-use crate::model::SourceKind;
+use crate::import;
+use crate::model::{SourceKind, Track};
 use crate::share;
 
 impl App {
@@ -13,9 +15,9 @@ impl App {
         let (code, included, skipped) = share::encode(&b.get_playlist_name(), &b.get_playlist_description(), &tracks);
         let info = match (included, skipped) {
             (0, _) => "This playlist has no YouTube or SoundCloud songs, so there's nothing to share. Songs from your PC or your Nextcloud can't be played by others.".to_string(),
-            (n, 0) => format!("{n} song(s). Send this code to someone; they import it with + next to Playlists → Import shared."),
+            (n, 0) => format!("{n} song(s). Send this code to someone; they import it with + next to Playlists → Import."),
             (n, k) => format!(
-                "{n} song(s). {k} song(s) from your PC or Nextcloud were left out, because others can't play them. Send this code to someone; they import it with + next to Playlists → Import shared."
+                "{n} song(s). {k} song(s) from your PC or Nextcloud were left out, because others can't play them. Send this code to someone; they import it with + next to Playlists → Import."
             ),
         };
         b.set_share_code(s(if included > 0 { code } else { String::new() }));
@@ -30,8 +32,17 @@ impl App {
         }
     }
 
-    /// Create a playlist from a pasted code. Returns false (and shows why) if the code is bad.
+    /// Create a playlist from a pasted code or playlist link. Returns false (and shows why) if
+    /// it can't be imported; links are imported in the background.
     pub(super) fn import_playlist(&mut self, code: &str) -> bool {
+        match import::parse_link(code) {
+            Ok(Some(link)) => return self.import_link(link),
+            Ok(None) => {}
+            Err(e) => {
+                self.backend().set_share_error(s(format!("{e:#}")));
+                return false;
+            }
+        }
         let shared = match share::decode(code) {
             Ok(p) => p,
             Err(e) => {
@@ -40,13 +51,23 @@ impl App {
             }
         };
         self.backend().set_share_error(s(""));
-        let res = (|| -> anyhow::Result<(i64, Vec<(i64, SourceKind, String)>)> {
+        if let Err(e) = self.save_imported(&shared.name, &shared.description, None, &shared.tracks) {
+            self.backend().set_share_error(s(format!("Import failed: {e:#}")));
+            return false;
+        }
+        self.toast(format!("Imported “{}” with {} song(s)", shared.name, shared.tracks.len()));
+        true
+    }
+
+    /// Store an imported playlist, open it and fetch the missing covers.
+    pub(super) fn save_imported(&mut self, name: &str, description: &str, cover: Option<&str>, tracks: &[Track]) -> anyhow::Result<()> {
+        let (id, need_cover) = {
             let db = self.db.lock().unwrap();
-            let id = db.create_playlist(&shared.name)?;
-            db.set_playlist_details(id, &shared.name, &shared.description, None)?;
+            let id = db.create_playlist(name)?;
+            db.set_playlist_details(id, name, description, cover)?;
             let mut ids = vec![];
             let mut need_cover = vec![];
-            for t in &shared.tracks {
+            for t in tracks {
                 // Songs in a playlist are part of the library, like when you add them yourself.
                 let tid = db.upsert_track(t, true)?;
                 if db.track(tid).map(|t| t.cover.is_none()).unwrap_or(false) {
@@ -55,21 +76,13 @@ impl App {
                 ids.push(tid);
             }
             db.add_to_playlist(id, &ids)?;
-            Ok((id, need_cover))
-        })();
-        let (id, need_cover) = match res {
-            Ok(r) => r,
-            Err(e) => {
-                self.backend().set_share_error(s(format!("Import failed: {e:#}")));
-                return false;
-            }
+            (id, need_cover)
         };
-        self.toast(format!("Imported “{}” with {} song(s)", shared.name, shared.tracks.len()));
         self.library_dirty = true;
         self.refresh_playlists();
         self.open_playlist(id);
         self.fetch_covers(id, need_cover);
-        true
+        Ok(())
     }
 
     /// Thumbnails / artwork for imported songs, in the background.

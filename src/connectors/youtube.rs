@@ -103,35 +103,150 @@ pub fn thumb_url(id: &str) -> String {
     format!("https://i.ytimg.com/vi/{id}/mqdefault.jpg")
 }
 
-pub fn search(configured: &str, query: &str, limit: usize) -> Result<Vec<Track>> {
+/// Run yt-dlp on a search or playlist without resolving the videos (`--flat-playlist -J`).
+fn flat_json(configured: &str, target: &str) -> Result<serde_json::Value> {
     let out = hidden_command(binary(configured))
         .args(["--flat-playlist", "-J", "--no-warnings", "--ignore-config"])
-        .arg(format!("ytsearch{limit}:{query}"))
+        .arg(target)
         .output()
         .context("yt-dlp not found — set it up in Settings → Sources")?;
     if !out.status.success() {
-        bail!("yt-dlp: {}", String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("search failed"));
+        bail!("yt-dlp: {}", String::from_utf8_lossy(&out.stderr).lines().last().unwrap_or("request failed"));
     }
-    let json: serde_json::Value = serde_json::from_slice(&out.stdout)?;
-    let mut tracks = vec![];
-    for e in json["entries"].as_array().into_iter().flatten() {
-        let Some(id) = e["id"].as_str() else { continue };
-        let mut t = Track::new(SourceKind::YouTube, id);
-        let (artist, title) = split_video_title(
-            e["title"].as_str().unwrap_or(id),
-            e["channel"].as_str().or(e["uploader"].as_str()).unwrap_or(""),
-        );
-        t.title = title;
-        t.artist = artist;
-        t.album = "YouTube".into();
-        t.duration_ms = (e["duration"].as_f64().unwrap_or(0.0) * 1000.0) as i64;
-        let cached = thumb_cover_path(id);
-        if cached.exists() {
-            t.cover = Some(cached.to_string_lossy().into_owned());
-        }
-        tracks.push(t);
+    Ok(serde_json::from_slice(&out.stdout)?)
+}
+
+/// A video from a flat search or playlist as a track.
+fn entry_track(e: &serde_json::Value) -> Option<Track> {
+    let id = e["id"].as_str()?;
+    let mut t = Track::new(SourceKind::YouTube, id);
+    let (artist, title) = split_video_title(
+        e["title"].as_str().unwrap_or(id),
+        e["channel"].as_str().or(e["uploader"].as_str()).unwrap_or(""),
+    );
+    t.title = title;
+    t.artist = artist;
+    t.album = "YouTube".into();
+    t.duration_ms = (e["duration"].as_f64().unwrap_or(0.0) * 1000.0) as i64;
+    let cached = thumb_cover_path(id);
+    if cached.exists() {
+        t.cover = Some(cached.to_string_lossy().into_owned());
     }
-    Ok(tracks)
+    Some(t)
+}
+
+pub fn search(configured: &str, query: &str, limit: usize) -> Result<Vec<Track>> {
+    let json = flat_json(configured, &format!("ytsearch{limit}:{query}"))?;
+    Ok(json["entries"].as_array().into_iter().flatten().filter_map(entry_track).collect())
+}
+
+pub struct Playlist {
+    pub name: String,
+    pub description: String,
+    /// Playlist thumbnails, largest first (the largest isn't always there).
+    pub cover_urls: Vec<String>,
+    pub tracks: Vec<Track>,
+}
+
+/// A public or unlisted YouTube / YouTube Music playlist (albums are playlists there too).
+/// `list` is the playlist id, already checked by the caller.
+pub fn playlist(configured: &str, list: &str, max: usize) -> Result<Playlist> {
+    let json = flat_json(configured, &format!("https://www.youtube.com/playlist?list={list}"))?;
+    let tracks = json["entries"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        // Deleted and private videos stay in the list as placeholders.
+        .filter(|e| !matches!(e["title"].as_str(), Some("[Deleted video]" | "[Private video]")))
+        .filter_map(entry_track)
+        .take(max)
+        .collect();
+    Ok(Playlist {
+        name: json["title"].as_str().unwrap_or("").trim().trim_start_matches("Album - ").to_string(),
+        description: json["description"].as_str().unwrap_or("").trim().to_string(),
+        cover_urls: json["thumbnails"].as_array().into_iter().flatten().rev().filter_map(|t| t["url"].as_str()).map(String::from).collect(),
+        tracks,
+    })
+}
+
+/// The YouTube video that best stands in for a song from another service (title, artist and
+/// length in ms, 0 if unknown). None when no result looks like the same song.
+pub fn find_song(configured: &str, artist: &str, title: &str, duration_ms: i64) -> Result<Option<Track>> {
+    let title = song_title(title);
+    let json = flat_json(configured, &format!("ytsearch5:{artist} - {title}"))?;
+    let entries = json["entries"].as_array().cloned().unwrap_or_default();
+    let best = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(i, e)| {
+            let score = match_score(
+                e["title"].as_str().unwrap_or(""),
+                e["channel"].as_str().or(e["uploader"].as_str()).unwrap_or(""),
+                e["duration"].as_f64().map(|d| (d * 1000.0) as i64).unwrap_or(0),
+                artist,
+                &title,
+                duration_ms,
+            )?;
+            // Search order breaks ties.
+            Some((score - i as i32 * 2, e))
+        })
+        .max_by_key(|(score, _)| *score);
+    Ok(best.and_then(|(_, e)| {
+        let mut t = entry_track(e)?;
+        // The other service's tags are cleaner than a video title.
+        t.title = title.clone();
+        t.artist = artist.to_string();
+        Some(t)
+    }))
+}
+
+/// Spotify writes versions as "Song - Remastered 2011" or "Song - Live"; the search and the
+/// comparison use the song name only.
+fn song_title(title: &str) -> String {
+    let cut = title.split(" - ").next().unwrap_or(title);
+    let clean = crate::model::clean_title(cut);
+    if clean.is_empty() { title.trim().to_string() } else { clean }
+}
+
+fn norm(s: &str) -> String {
+    s.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase()
+}
+
+/// Lower case words between spaces, so whole words can be found (" live " but not "alive").
+fn words(s: &str) -> String {
+    let w: String = s.to_lowercase().chars().map(|c| if c.is_alphanumeric() { c } else { ' ' }).collect();
+    format!(" {} ", w.split_whitespace().collect::<Vec<_>>().join(" "))
+}
+
+/// Versions nobody wants instead of the original, unless the song asks for them.
+const OTHER_VERSIONS: &[&str] =
+    &["live", "remix", "cover", "karaoke", "sped up", "slowed", "nightcore", "instrumental", "8d", "reverb", "acoustic", "1 hour"];
+
+/// How well a search result fits the wanted song; None if it is something else.
+fn match_score(video_title: &str, channel: &str, video_ms: i64, artist: &str, title: &str, wanted_ms: i64) -> Option<i32> {
+    let title_ok = norm(video_title).contains(&norm(title));
+    let artist_ok = artist.split(", ").next().map(norm).is_some_and(|a| !a.is_empty() && norm(&format!("{video_title} {channel}")).contains(&a));
+    let diff = if video_ms > 0 && wanted_ms > 0 { Some((video_ms - wanted_ms).abs() / 1000) } else { None };
+    if diff.is_some_and(|d| d > 25) {
+        return None;
+    }
+    if !title_ok && !(artist_ok && diff.is_some_and(|d| d <= 3)) {
+        return None;
+    }
+    let (video, wanted) = (words(video_title), words(&format!("{artist} {title}")));
+    let other = OTHER_VERSIONS.iter().filter(|w| video.contains(&format!(" {w} ")) && !wanted.contains(&format!(" {w} "))).count() as i32;
+    let mut score = 100 - diff.unwrap_or(10) as i32 * 3 - other * 50;
+    if title_ok {
+        score += 30;
+    }
+    if artist_ok {
+        score += 30;
+    }
+    // "Artist - Topic" channels carry the album version.
+    if channel.ends_with(" - Topic") {
+        score += 10;
+    }
+    Some(score)
 }
 
 /// Where the video thumbnail used as a stand-in cover is stored.
@@ -200,7 +315,7 @@ pub fn split_video_title(title: &str, channel: &str) -> (String, String) {
 
 #[cfg(test)]
 mod tests {
-    use super::split_video_title;
+    use super::{match_score, song_title, split_video_title};
 
     /// A yt-dlp_linux saved from the browser (not executable) is found and made executable;
     /// the Windows build in the folder gets its own hint.
@@ -233,5 +348,20 @@ mod tests {
         );
         assert_eq!(split_video_title("Holy Wars", "MegadethVEVO"), ("Megadeth".to_string(), "Holy Wars".to_string()));
         assert_eq!(split_video_title("Holy Wars", "Megadeth - Topic"), ("Megadeth".to_string(), "Holy Wars".to_string()));
+    }
+
+    #[test]
+    fn song_matching() {
+        assert_eq!(song_title("Let It Be - Remastered 2009"), "Let It Be");
+        assert_eq!(song_title("Song (feat. Other)"), "Song");
+        // The original beats the live version and an unrelated video.
+        let original = match_score("Tate McRae - Housewife (Lyric Video)", "Tate McRae", 210_000, "Tate McRae", "Housewife", 208_810);
+        let live = match_score("Tate McRae - Housewife (Live 2026)", "Tate McRae", 220_000, "Tate McRae", "Housewife", 208_810);
+        assert!(original.unwrap() > live.unwrap());
+        assert!(match_score("Alive - Official Audio", "Band - Topic", 200_000, "Band", "Alive", 200_000).unwrap() > 150);
+        assert_eq!(match_score("Something else", "Other", 209_000, "Tate McRae", "Housewife", 208_810), None);
+        assert_eq!(match_score("Tate McRae - Housewife (1 hour loop)", "x", 3_600_000, "Tate McRae", "Housewife", 208_810), None);
+        // A live song may be a live video.
+        assert!(match_score("Song (Live)", "Band", 200_000, "Band", "Song live", 200_000).unwrap() > 150);
     }
 }

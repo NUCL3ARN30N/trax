@@ -440,7 +440,7 @@ export component AppWindow inherits Window {
                     spacing: 8px;
                     alignment: end;
                     if Ui.dialog == 1: M3Button {
-                        text: "Import shared…";
+                        text: "Import…";
                         kind: 3;
                         clicked => {
                             Ui.dialog-text = "";
@@ -528,7 +528,7 @@ export component AppWindow inherits Window {
         }
     }
 
-    // 9: share the open playlist as a code, 10: import a shared code.
+    // 9: share the open playlist as a code, 10: import a shared code or a playlist link.
     if Ui.dialog == 9 || Ui.dialog == 10: Rectangle {
         background: #00000080;
         TouchArea { }
@@ -542,14 +542,14 @@ export component AppWindow inherits Window {
                 padding: 24px;
                 spacing: 14px;
                 Text {
-                    text: Ui.dialog == 9 ? "Share “" + Backend.playlist-name + "”" : "Import shared playlist";
+                    text: Ui.dialog == 9 ? "Share “" + Backend.playlist-name + "”" : "Import playlist";
                     font-size: 24px;
                     overflow: elide;
                     color: Theme.on-surface;
                 }
                 WrapText {
                     text: Ui.dialog == 9 ? Backend.share-info
-                        : "Paste a playlist code (it starts with “trax1:”). Only YouTube and SoundCloud songs are shared, so YouTube or SoundCloud has to be switched on in Settings → Sources to play them.";
+                        : "Paste a trax playlist code (it starts with “trax1:”), or the link to a public YouTube, YouTube Music or Spotify playlist. Songs from Spotify are looked up on YouTube (the first 100 of a playlist). The songs play from YouTube or SoundCloud, so switch those on in Settings → Sources.";
                     color: Theme.on-surface-variant;
                 }
                 if Ui.dialog == 9 && Backend.share-code != "": TextEdit {
@@ -563,7 +563,7 @@ export component AppWindow inherits Window {
                     height: 120px;
                     wrap: char-wrap;
                     font-size: 12px;
-                    placeholder-text: "trax1:…";
+                    placeholder-text: "trax1:…  or  https://open.spotify.com/playlist/…";
                     text <=> Ui.dialog-text;
                     init => { self.focus(); }
                 }
